@@ -1,0 +1,2 @@
+include permumark/derangement/derangement.c
+include README.md
