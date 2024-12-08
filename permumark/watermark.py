@@ -64,6 +64,8 @@ class PermutationWatermark:
     :param config: configuration of the model to watermark
     :param max_corrupt_prob: maximal probability that a corruption not being detected
     :param total_id_num: total number of different identities to manage
+    :param evaluation_points: points for evaluation (for code)
+    :param column_multipliers: multipliers for columns (for code)
     """
 
     def __init__(
@@ -71,6 +73,8 @@ class PermutationWatermark:
         config: PretrainedConfig,
         max_corrupt_prob: float = 1e-4,
         total_id_num: int = 10_000_000,
+        evaluation_points: list[int] | None = None,
+        column_multipliers: list[int] | None = None,
     ):
         self.max_corrupt_prob = max_corrupt_prob
         self.total_id_num = total_id_num
@@ -86,7 +90,11 @@ class PermutationWatermark:
         gf_size, id_length = get_ecc_params(
             self.num_kv_heads, self.group_size, total_id_num, max_corrupt_prob
         )
-        self.ecc = ecc.ReedSolomonCode(gf_size, len(self.slots), id_length)
+        self.evaluation_points = evaluation_points
+        self.column_multipliers = column_multipliers
+        self.ecc = ecc.ReedSolomonCode(
+            gf_size, len(self.slots), id_length, evaluation_points, column_multipliers
+        )
         self.perm_map = permutation_mapping.PermutationMapping(
             gf_size,
             config.hidden_size,
@@ -109,6 +117,41 @@ class PermutationWatermark:
             f"total_id_num={self.total_id_num})"
         )
         return res
+
+    def to_dict(self) -> dict:
+        """
+        Convert the watermark config to a dictionary.
+        :return: configuration dictionary
+        """
+        return {
+            "config": {
+                "num_hidden_layers": self.layer_num,
+                "num_attention_heads": self.num_attention_heads,
+                "num_key_value_heads": self.num_kv_heads,
+                "hidden_size": self.head_dim * self.num_attention_heads,
+                "intermediate_size": self.perm_map.sizes["feed_forward"],
+            },
+            "max_corrupt_prob": self.max_corrupt_prob,
+            "total_id_num": self.total_id_num,
+            "evaluation_points": self.evaluation_points,
+            "column_multipliers": self.column_multipliers,
+        }
+
+    @classmethod
+    def from_dict(cls, params: dict) -> PermutationWatermark:
+        """
+        Construct a watermark configuration from a dictionary.
+        :param params: parameters of the watermark configuration
+        :return: a PermutationWatermark instance
+        """
+        config = PretrainedConfig(**params["config"])
+        return cls(
+            config,
+            params["max_corrupt_prob"],
+            params["total_id_num"],
+            params["evaluation_points"],
+            params["column_multipliers"],
+        )
 
     def generate_random_identity(self) -> list[int]:
         """

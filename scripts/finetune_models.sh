@@ -25,5 +25,5 @@ models=(
 for model_path in "${models[@]}"; do
   log_file=$(generate_log_file "$model_path")
   echo "Fine-tuning $model_path, logs will be saved to $log_file"
-  python evaluation/evasion_finetune.py "$model_path" -t $num5m $num50m $num500m $num5b > "$log_file" 2>&1
+  python -u evaluation/evasion_finetune.py "$model_path" -t $num5m $num50m $num500m $num5b > "$log_file"
 done

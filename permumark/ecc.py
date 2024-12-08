@@ -57,18 +57,28 @@ class ReedSolomonCode(ErrorCorrectionCode):
     :param q: size of the finite field
     :param length: size of codeword
     :param dimension: size of message
+    :param evaluation_points: points for evaluation (for code)
+    :param column_multipliers: multipliers for columns (for code)
     """
 
-    def __init__(self, q: int, length: int, dimension: int) -> None:
+    def __init__(
+        self,
+        q: int,
+        length: int,
+        dimension: int,
+        evaluation_points: list[int] | None = None,
+        column_multipliers: list[int] | None = None,
+    ) -> None:
         super().__init__(q, length, dimension)
         self.length = length
         self.dimension = dimension
         self.F = GF(Integer(q), "x")
+        evaluation_points = evaluation_points or list(range(1, length + 1))
+        column_multipliers = column_multipliers or list(range(1, length + 1))
         self.rs = codes.GeneralizedReedSolomonCode(
-            # evaluation_points=self.F.list()[1 : length + 1],
-            evaluation_points=[self.F.from_integer(i) for i in range(1, length + 1)],
+            evaluation_points=[self.F.from_integer(i) for i in evaluation_points],
             dimension=dimension,
-            column_multipliers=[self.F.from_integer(i) for i in range(1, length + 1)],
+            column_multipliers=[self.F.from_integer(i) for i in column_multipliers],
         )
         self.decoder = self.rs.decoder("ErrorErasure")
         self.decoder = codes.decoders.GRSErrorErasureDecoder(self.rs)

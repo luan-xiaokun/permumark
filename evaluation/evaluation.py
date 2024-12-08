@@ -114,43 +114,20 @@ def evaluate_utility(
     :return: None
     """
     from datasets import load_dataset
-    from torch.utils.data import DataLoader
-    from transformers import AutoTokenizer, DataCollatorWithPadding
 
-    def preprocess(examples):
-        tokens = tokenizer(
-            examples["text"],
-            # return_tensors="pt",
-            padding=True,
-            # truncation=True,
-            # max_length=256,
-        )
-        tokens["labels"] = tokens["input_ids"].copy()
-        return tokens
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_path, clean_up_tokenizer_exceptions=False, trust_remote_code=True
-    )
-    if "Llama-3" in model_path:
-        eval_utils.setup_llama3_tokenizer(tokenizer)
     dataset = load_dataset(**DATASET)
-    # modify tokenizer?
-    filtered_dataset = dataset.filter(lambda x: len(tokenizer.tokenize(x["text"])) >= 3)
-    processed_dataset = filtered_dataset.map(
-        preprocess, batched=True, remove_columns=["text"]
-    )
-    data_collator = DataCollatorWithPadding(tokenizer=tokenizer, return_tensors="pt")
-    dataloader = DataLoader(
-        processed_dataset, batch_size=batch_size, collate_fn=data_collator
-    )
 
     # get predicted tokens and perplexity
-    predicted0 = eval_utils.eval_predicted_tokens(model, dataloader)
-    ppl0 = eval_utils.eval_perplexity(model, tokenizer, dataset)
+    predicted0 = eval_utils.eval_predicted_tokens(
+        model, model_path, dataset, batch_size
+    )
+    ppl0 = eval_utils.eval_perplexity(model, model_path, dataset)
     # insert watermark and re-evaluate predicted tokens and perplexity
     _ = pw.insert_watermark(model, pw.generate_random_identity())
-    predicted1 = eval_utils.eval_predicted_tokens(model, dataloader)
-    ppl1 = eval_utils.eval_perplexity(model, tokenizer, dataset)
+    predicted1 = eval_utils.eval_predicted_tokens(
+        model, model_path, dataset, batch_size
+    )
+    ppl1 = eval_utils.eval_perplexity(model, model_path, dataset)
     diff = sum(p0 != p1 for p0, p1 in zip(predicted0, predicted1))
     total = len(predicted0)
 
