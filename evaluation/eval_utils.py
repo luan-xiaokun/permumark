@@ -8,6 +8,8 @@ from datasets import Dataset
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer, DataCollatorWithPadding
 
+from permumark.watermark import PermutationWatermarkExtractionResult, PermutationWatermarkInsertionResult
+
 
 def eval_predicted_tokens(
     model, model_path: str, dataset: Dataset, batch_size: int
@@ -108,3 +110,17 @@ def eval_perplexity(
             break
 
     return torch.exp(torch.stack(nlls).mean()).item()
+
+
+def compare_watermarks(
+    res1: PermutationWatermarkInsertionResult,
+    res2: PermutationWatermarkExtractionResult,
+) -> tuple[int, int, bool]:
+    """
+    Compare watermark insertion result and watermark extraction result.
+    :param res1: the insertion result
+    :param res2: the extraction result
+    :return: number of differences, watermark length, and if they have the same identity
+    """
+    diff = sum(i != j for i, j in zip(res1.watermark, res2.watermark))
+    return diff, len(res1.watermark), res1.identity == res2.identity

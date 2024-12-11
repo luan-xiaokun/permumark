@@ -14,6 +14,7 @@ from peft import LoraConfig, PeftModel, TaskType, get_peft_model
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
+    BitsAndBytesConfig,
     PreTrainedModel,
     PreTrainedTokenizer,
     Trainer,
@@ -21,7 +22,12 @@ from transformers import (
     TrainingArguments,
 )
 
+from eval_utils import compare_watermarks
 from permumark import PermutationWatermark
+from permumark.watermark import PermutationWatermarkInsertionResult
+
+
+torch.set_float32_matmul_precision("high")
 
 
 @dataclass
@@ -36,11 +42,11 @@ class FinetuneConfig:
     weight_decay: float = 0.01
     warmup_ratio: float = 0.1
     warmup_steps: int = 1000
-    num_epochs: int = 10
-    per_device_train_batch_size: int = 8
+    num_epochs: int = 1
+    per_device_train_batch_size: int = 4
     gradient_accumulation_steps: int = 1
     bf16: bool = True
-    max_length_percentile: float = 0.95
+    max_length_percentile: float = 0.9
 
 
 @dataclass
@@ -130,7 +136,7 @@ def get_token_lengths(dataset: Dataset, tokenizer: PreTrainedTokenizer) -> list[
             "length": len(tokenizer(example["text"], truncation=False)["input_ids"])
         }
 
-    length_dataset = dataset.map(tokenize_length)
+    length_dataset = dataset.map(tokenize_length, num_proc=8)
     return length_dataset["length"]
 
 
@@ -160,7 +166,7 @@ def preprocess_dataset(
         inputs["labels"] = inputs["input_ids"].copy()
         return inputs
 
-    return dataset.map(tokenize, remove_columns=["text"])
+    return dataset.map(tokenize, remove_columns=["text"], num_proc=8)
 
 
 def finetune_model(
@@ -183,7 +189,11 @@ def finetune_model(
     """
     log_print(f"Loading model from {model_path}")
     model = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype="auto", trust_remote_code=True
+        model_path,
+        torch_dtype="auto",
+        trust_remote_code=True,
+        quantization_config=BitsAndBytesConfig(load_in_8bit=True),
+        device_map="auto",
     )
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, clean_up_tokenizer_exceptions=False, trust_remote_code=True
@@ -240,6 +250,9 @@ def finetune_model(
         gradient_accumulation_steps=finetune_config.gradient_accumulation_steps,
         bf16=finetune_config.bf16,
         include_num_input_tokens_seen=True,
+        dataloader_num_workers=8,
+        # auto_find_batch_size=True,
+        save_steps=5000,
     )
     trainer = Trainer(
         model=peft_model,
@@ -258,7 +271,11 @@ def load_finetune_model(
     base_model_path: str,
     peft_model_path: str,
     token_num: int,
-) -> PreTrainedModel:
+) -> tuple[
+    PreTrainedModel,
+    PermutationWatermark | None,
+    PermutationWatermarkInsertionResult | None,
+]:
     """
     Load a fine-tuned transformer model from given model path.
     :param base_model_path: path to the base pre-trained model
@@ -270,6 +287,8 @@ def load_finetune_model(
         base_model_path, torch_dtype="auto", trust_remote_code=True
     )
     watermark_path = Path(peft_model_path) / "watermark.json"
+    pw = None
+    insert_res = None
     if watermark_path.exists():
         watermark_config = json.loads(watermark_path.read_text())
         pw = PermutationWatermark.from_dict(watermark_config)
@@ -280,7 +299,7 @@ def load_finetune_model(
     model = PeftModel.from_pretrained(
         base_model, str(Path(peft_model_path) / ckpt_folder)
     )
-    return model.merge_and_unload()
+    return model.merge_and_unload(), pw, insert_res
 
 
 def main():
@@ -292,7 +311,7 @@ def main():
     parser.add_argument("model_path", type=str)
     parser.add_argument("--thresholds", "-t", nargs="+", type=int)
     parser.add_argument("--dataset_path", default="datasets/Salesforce/wikitext")
-    parser.add_argument("--dataset_name", default="wikitext-2-v1")
+    parser.add_argument("--dataset_name", default="wikitext-103-v1")
     parser.add_argument("--dataset_split", default="train")
     parser.add_argument("-r", type=int)
     parser.add_argument("--lora_alpha", type=int)
@@ -320,7 +339,10 @@ def main():
             print(f"- {arg}: {value}")
 
     dataset = load_dataset(
-        args.dataset_path, args.dataset_name, split=args.dataset_split
+        args.dataset_path,
+        args.dataset_name,
+        split=args.dataset_split,
+        cache_dir=".cache/huggingface/datasets",
     )
     finetune_config_args = {
         field.name: getattr(args, field.name)
@@ -345,5 +367,37 @@ def main():
     )
 
 
+def test_watermark():
+    model_path = "../models/meta-llama/Llama-3.1-8B"
+    peft_model_path = "../models/finetune/meta-llama/Llama-3.1-8B"
+    token_num = 50000000
+    model, pw, insert_res = load_finetune_model(model_path, peft_model_path, token_num)
+    source = AutoModelForCausalLM.from_pretrained(
+        model_path, torch_dtype="auto", trust_remote_code=True
+    )
+    extract_res = pw.extract_watermark(source, model)
+    print(f"Extracted watermark: {extract_res.watermark}")
+    print(f"Extracted identity: {extract_res.identity}")
+
+
+def evaluate_finetune_robustness(
+    model_path: str, source: PreTrainedModel, finetune_weights_dir: str
+):
+    peft_path = Path(finetune_weights_dir) / Path(*Path(model_path).parts[-2:])
+    token_nums = [i * 1_000_000 for i in [1, 5, 10, 50, 100]]
+    for token_num in token_nums:
+        model, pw, insert_res = load_finetune_model(
+            model_path, str(peft_path), token_num
+        )
+        extract_res = pw.extract_watermark(source, model)
+        diff, total, robustness = compare_watermarks(insert_res, extract_res)
+        print(
+            f"Fine-tuned ({pretty_token_num(token_num)} tokens): "
+            f"{diff}/{total} corrupted digits\n"
+            f"Robustness: {robustness}"
+        )
+
+
 if __name__ == "__main__":
-    main()
+    test_watermark()
+    # main()

@@ -7,11 +7,14 @@ import os
 import time
 from copy import deepcopy
 
+from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, PreTrainedModel
 
 import attacks
 import eval_utils
+from evasion_finetune import evaluate_finetune_robustness
+from evasion_quantization import evaluate_quantization_robustness
 from permumark import PermutationWatermark
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -113,8 +116,6 @@ def evaluate_utility(
     :param batch_size: batch size used for evaluation
     :return: None
     """
-    from datasets import load_dataset
-
     dataset = load_dataset(**DATASET)
 
     # get predicted tokens and perplexity
@@ -135,8 +136,17 @@ def evaluate_utility(
     print(f"Perplexity {ppl0:.3f} -> {ppl1:.3f}")
 
 
-def evaluate_robustness():
-    pass
+def evaluate_robustness(
+    model: PreTrainedModel,
+    model_path: str,
+    modification: str,
+    finetune_weights_dir: str,
+):
+    if modification == "finetune":
+        evaluate_finetune_robustness(model_path, model, finetune_weights_dir)
+    elif modification == "quantization":
+        dataset = load_dataset(**DATASET)
+        evaluate_quantization_robustness(model_path, model, bits=8, dataset=dataset)
 
 
 def evaluate_efficiency(
@@ -260,7 +270,7 @@ def main():
     if args.task == "utility":
         evaluate_utility(model_path, model, pw, batch_size=args.batch_size)
     elif args.task == "robustness":
-        evaluate_robustness()
+        evaluate_robustness(model, model_path, args.modification, "models/finetune")
     elif args.task == "efficiency":
         evaluate_efficiency(model, pw, repeat=args.repeat)
     elif args.task == "security":

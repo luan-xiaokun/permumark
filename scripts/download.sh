@@ -25,5 +25,5 @@ models=(
     "mistralai/Ministral-8B-Instruct-2410"
 )
 for model_path in "${models[@]}"; do
-    huggingface-cli download --repo-type model "$model_path" --local-dir "models/$model_path" --local-dir-use-symlinks False
+    huggingface-cli download --repo-type model "$model_path" --local-dir "models/$model_path"
 done
