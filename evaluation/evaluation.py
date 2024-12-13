@@ -15,6 +15,7 @@ from transformers import AutoModelForCausalLM, PreTrainedModel
 import attacks
 import eval_utils
 from evasion_finetune import evaluate_finetune_robustness
+from evasion_pruning import evaluate_pruning_robustness
 from evasion_quantization import evaluate_quantization_robustness
 from permumark import PermutationWatermark
 
@@ -50,6 +51,8 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--modification", type=str)
     parser.add_argument("--perm_budget", type=int, default=20)
     parser.add_argument("--perm_type", type=str, default="random")
+    parser.add_argument("--pruning_method", type=str, default="l1-unstructured")
+    parser.add_argument("--pruning_amount", type=float, default=0.5)
     parser.add_argument("--quant_bits", type=int, default=8)
     parser.add_argument("--repeat", type=int, default=10)
     parser.add_argument("--scale_attack", action="store_true")
@@ -145,6 +148,8 @@ def evaluate_robustness(
     pw: PermutationWatermark,
     modification: str,
     finetune_weights_dir: str,
+    pruning_method: str,
+    pruning_amount: float,
     quant_bits: int,
     verbose: bool = False,
 ):
@@ -156,19 +161,30 @@ def evaluate_robustness(
     :param pw: a PermutationWatermark instance
     :param modification: model modification method
     :param finetune_weights_dir: directory of fine-tuning weights
+    :param pruning_method: pruning method to apply
+    :param pruning_amount: amount of pruned parameters
     :param quant_bits: quantization bits
     :param verbose: verbose output of watermark insertion and extraction
     :return: None
     """
     if modification == "finetune":
         evaluate_finetune_robustness(model_path, model, finetune_weights_dir, verbose)
+    elif modification == "pruning":
+        dataset = load_dataset(**DATASET)
+        evaluate_pruning_robustness(
+            model_path,
+            model,
+            pw,
+            pruning_method,
+            dataset=dataset,
+            pruning_amount=pruning_amount,
+            verbose=verbose,
+        )
     elif modification == "quantization":
         dataset = load_dataset(**DATASET).select(range(QUANTIZATION_DATASET_SIZE))
         evaluate_quantization_robustness(
             model_path, model, pw, quant_bits, dataset, verbose
         )
-    elif modification == "pruning":
-        pass
 
 
 def evaluate_efficiency(
@@ -296,7 +312,15 @@ def main():
         evaluate_utility(model_path, model, pw, batch_size=args.batch_size)
     elif args.task == "robustness":
         evaluate_robustness(
-            model_path, model, pw, args.modification, "models/finetune", args.quant_bits
+            model_path,
+            model,
+            pw,
+            args.modification,
+            "models/finetune",
+            args.pruning_method,
+            args.pruning_amount,
+            args.quant_bits,
+            args.verbose,
         )
     elif args.task == "efficiency":
         evaluate_efficiency(model, pw, repeat=args.repeat)

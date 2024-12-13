@@ -174,7 +174,5 @@ def compare_watermarks(
     :param res2: the extraction result
     :return: number of differences, watermark length, and if they have the same identity
     """
-    print(res1.watermark)
-    print(res2.watermark)
     diff = sum(i != j for i, j in zip(res1.watermark, res2.watermark))
     return diff, len(res1.watermark), res1.identity == res2.identity
