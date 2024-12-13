@@ -1,5 +1,5 @@
 [build-system]
-requires = ["setuptools", "wheel", "setuptools_scm"]
+requires = ["setuptools", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -19,15 +19,14 @@ classifiers = [
     "Programming Language :: Python :: 3.12"
 ]
 dependencies = [
-    "datasets==2.21.0",
+    "datasets==3.2.0",
     "peft==0.14.0",
-    "sagemath-standard==10.4",
     "scipy==1.14.1",
-    "sympy==1.13.1",
-    "tokenizers==0.20.3",
-    "torch==2.5.0",
+    "sympy==1.13.3",
+    "tokenizers==0.21.0",
+    "torch==2.2.1",
     "tqdm==4.67.1",
-    "transformers==4.46.3"
+    "transformers==4.47.0"
 ]
 
 [tool.isort]

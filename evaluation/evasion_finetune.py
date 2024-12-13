@@ -16,13 +16,12 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     PreTrainedModel,
-    PreTrainedTokenizer,
     Trainer,
     TrainerCallback,
     TrainingArguments,
 )
 
-from eval_utils import compare_watermarks
+from eval_utils import compare_watermarks, preprocess_dataset
 from permumark import PermutationWatermark
 from permumark.watermark import PermutationWatermarkInsertionResult
 
@@ -121,52 +120,6 @@ def pretty_token_num(token_num: int) -> str:
         k_power += 1
     prefix = str(token_num // 1000**k_power)
     return f"{prefix}{suffixes[k_power]}"
-
-
-def get_token_lengths(dataset: Dataset, tokenizer: PreTrainedTokenizer) -> list[int]:
-    """
-    Get token lengths in the dataset.
-    :param dataset: dataset to tokenize
-    :param tokenizer: the tokenizer
-    :return: a list of token lengths
-    """
-
-    def tokenize_length(example):
-        return {
-            "length": len(tokenizer(example["text"], truncation=False)["input_ids"])
-        }
-
-    length_dataset = dataset.map(tokenize_length, num_proc=8)
-    return length_dataset["length"]
-
-
-def preprocess_dataset(
-    dataset: Dataset, tokenizer: PreTrainedTokenizer, percentile: float = 0.95
-) -> Dataset:
-    """
-    Preprocess the dataset for fine-tuning.
-    :param dataset: dateset used for fine-tuning
-    :param tokenizer: tokenizer of the model
-    :param percentile: only consider lengths at this percentile
-    :return: a preprocessed dataset
-    """
-    lengths = get_token_lengths(dataset, tokenizer)
-    max_length = int(torch.tensor(lengths).float().quantile(percentile))
-    log_print(
-        f"Max length: {max(lengths)}, {percentile:.1%} percentile length: {max_length}"
-    )
-
-    def tokenize(example):
-        inputs = tokenizer(
-            example["text"],
-            truncation=True,
-            padding="max_length",
-            max_length=max_length,
-        )
-        inputs["labels"] = inputs["input_ids"].copy()
-        return inputs
-
-    return dataset.map(tokenize, remove_columns=["text"], num_proc=8)
 
 
 def finetune_model(
@@ -271,6 +224,7 @@ def load_finetune_model(
     base_model_path: str,
     peft_model_path: str,
     token_num: int,
+    verbose: bool = False,
 ) -> tuple[
     PreTrainedModel,
     PermutationWatermark | None,
@@ -281,6 +235,7 @@ def load_finetune_model(
     :param base_model_path: path to the base pre-trained model
     :param peft_model_path: path to the fine-tuned weights
     :param token_num: number of tokens trained with, used to determine checkpoint path
+    :param verbose: verbose output of PermutationWatermark
     :return: a transformer model with the same architecture as the base model
     """
     base_model = AutoModelForCausalLM.from_pretrained(
@@ -292,9 +247,9 @@ def load_finetune_model(
     if watermark_path.exists():
         watermark_config = json.loads(watermark_path.read_text())
         pw = PermutationWatermark.from_dict(watermark_config)
-        insert_res = pw.insert_watermark(base_model, watermark_config["identity"])
-        print(f"Inserted identity: {watermark_config['identity']}")
-        print(f"Inserted watermark: {insert_res.watermark}")
+        insert_res = pw.insert_watermark(
+            base_model, watermark_config["identity"], verbose=verbose
+        )
     ckpt_folder = f"checkpoint-{pretty_token_num(token_num)}_tokens"
     model = PeftModel.from_pretrained(
         base_model, str(Path(peft_model_path) / ckpt_folder)
@@ -302,7 +257,39 @@ def load_finetune_model(
     return model.merge_and_unload(), pw, insert_res
 
 
+def evaluate_finetune_robustness(
+    model_path: str,
+    source: PreTrainedModel,
+    finetune_weights_dir: str,
+    verbose: bool = False,
+):
+    """
+    Load fine-tuned models with watermark and verify if the identities can still be
+    extracted.
+    :param model_path: path to the original model
+    :param source: source model without watermark
+    :param finetune_weights_dir: path to fine-tuned weights
+    :param verbose: verbose output
+    :return: None
+    """
+    print("Evaluating fine-tuning robustness")
+    peft_path = Path(finetune_weights_dir) / Path(*Path(model_path).parts[-2:])
+    token_nums = [i * 1_000_000 for i in [1, 5, 10, 50, 100]]
+    for token_num in token_nums:
+        model, pw, insert_res = load_finetune_model(
+            model_path, str(peft_path), token_num
+        )
+        extract_res = pw.extract_watermark(source, model, verbose=verbose)
+        diff, total, robustness = compare_watermarks(insert_res, extract_res)
+        print(
+            f"Fine-tuned ({pretty_token_num(token_num)} tokens): "
+            f"{diff}/{total} corrupted digits\n"
+            f"Robustness: {robustness}"
+        )
+
+
 def main():
+    """Entrance to fine-tune models."""
     from dataclasses import fields
 
     from datasets import load_dataset
@@ -367,37 +354,5 @@ def main():
     )
 
 
-def test_watermark():
-    model_path = "../models/meta-llama/Llama-3.1-8B"
-    peft_model_path = "../models/finetune/meta-llama/Llama-3.1-8B"
-    token_num = 50000000
-    model, pw, insert_res = load_finetune_model(model_path, peft_model_path, token_num)
-    source = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype="auto", trust_remote_code=True
-    )
-    extract_res = pw.extract_watermark(source, model)
-    print(f"Extracted watermark: {extract_res.watermark}")
-    print(f"Extracted identity: {extract_res.identity}")
-
-
-def evaluate_finetune_robustness(
-    model_path: str, source: PreTrainedModel, finetune_weights_dir: str
-):
-    peft_path = Path(finetune_weights_dir) / Path(*Path(model_path).parts[-2:])
-    token_nums = [i * 1_000_000 for i in [1, 5, 10, 50, 100]]
-    for token_num in token_nums:
-        model, pw, insert_res = load_finetune_model(
-            model_path, str(peft_path), token_num
-        )
-        extract_res = pw.extract_watermark(source, model)
-        diff, total, robustness = compare_watermarks(insert_res, extract_res)
-        print(
-            f"Fine-tuned ({pretty_token_num(token_num)} tokens): "
-            f"{diff}/{total} corrupted digits\n"
-            f"Robustness: {robustness}"
-        )
-
-
 if __name__ == "__main__":
-    test_watermark()
-    # main()
+    main()

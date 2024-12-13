@@ -41,15 +41,14 @@ setup(
     ext_modules=[derangement_extension],
     cmdclass={"build_ext": CustomBuildExt},
     install_requires=[
-        "datasets==2.21.0",
+        "datasets==3.2.0",
         "peft==0.14.0",
-        "sagemath-standard==10.4",
         "scipy==1.14.1",
-        "sympy==1.13.1",
-        "tokenizers==0.20.3",
-        "torch==2.5.0",
+        "sympy==1.13.3",
+        "tokenizers==0.21.0",
+        "torch==2.2.1",
         "tqdm==4.67.1",
-        "transformers==4.46.3"
+        "transformers==4.47.0"
     ],
     classifiers=[
         "Development Status :: 3 - Alpha",

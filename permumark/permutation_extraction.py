@@ -75,6 +75,7 @@ def extract_perm(
             cost_matrix = torch.cdist(mat1, mat2, p=2).cpu()
     else:
         cost_matrix = compute_block_perm_cost_matrix(mat1, mat2, block_size).cpu()
+    # cost_matrix = cost_matrix + 1e-6 * torch.rand_like(cost_matrix)
 
     # solve the linear assignment problem
     row_ind, col_ind = linear_sum_assignment(cost_matrix.numpy())

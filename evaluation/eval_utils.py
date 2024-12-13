@@ -6,9 +6,61 @@ import torch
 import tqdm
 from datasets import Dataset
 from torch.utils.data import DataLoader
-from transformers import AutoTokenizer, DataCollatorWithPadding
+from transformers import AutoTokenizer, DataCollatorWithPadding, PreTrainedTokenizer
 
-from permumark.watermark import PermutationWatermarkExtractionResult, PermutationWatermarkInsertionResult
+from permumark.watermark import (
+    PermutationWatermarkExtractionResult,
+    PermutationWatermarkInsertionResult,
+)
+
+
+def get_token_lengths(dataset: Dataset, tokenizer: PreTrainedTokenizer) -> list[int]:
+    """
+    Get token lengths in the dataset.
+    :param dataset: dataset to tokenize
+    :param tokenizer: the tokenizer
+    :return: a list of token lengths
+    """
+
+    def tokenize_length(example):
+        return {
+            "length": len(tokenizer(example["text"], truncation=False)["input_ids"])
+        }
+
+    length_dataset = dataset.map(tokenize_length, num_proc=8)
+    return length_dataset["length"]
+
+
+def preprocess_dataset(
+    dataset: Dataset, tokenizer: PreTrainedTokenizer, percentile: float = 0.95
+) -> Dataset:
+    """
+    Preprocess the dataset for fine-tuning.
+    :param dataset: dateset used for fine-tuning
+    :param tokenizer: tokenizer of the model
+    :param percentile: only consider lengths at this percentile
+    :return: a preprocessed dataset
+    """
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
+
+    lengths = get_token_lengths(dataset, tokenizer)
+    max_length = int(torch.tensor(lengths).float().quantile(percentile))
+    print(
+        f"Max length: {max(lengths)}, {percentile:.1%} percentile length: {max_length}"
+    )
+
+    def tokenize(example):
+        inputs = tokenizer(
+            example["text"],
+            truncation=True,
+            padding="max_length",
+            max_length=max_length,
+        )
+        inputs["labels"] = inputs["input_ids"].copy()
+        return inputs
+
+    return dataset.map(tokenize, remove_columns=["text"], num_proc=8)
 
 
 def eval_predicted_tokens(
@@ -122,5 +174,7 @@ def compare_watermarks(
     :param res2: the extraction result
     :return: number of differences, watermark length, and if they have the same identity
     """
+    print(res1.watermark)
+    print(res2.watermark)
     diff = sum(i != j for i, j in zip(res1.watermark, res2.watermark))
     return diff, len(res1.watermark), res1.identity == res2.identity

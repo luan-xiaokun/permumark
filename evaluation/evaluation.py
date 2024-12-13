@@ -7,6 +7,7 @@ import os
 import time
 from copy import deepcopy
 
+import torch
 from datasets import load_dataset
 from tqdm import tqdm
 from transformers import AutoModelForCausalLM, PreTrainedModel
@@ -34,6 +35,7 @@ DATASET = {
     "name": "wikitext-2-v1",
     "split": "train",
 }
+QUANTIZATION_DATASET_SIZE = 512
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -48,6 +50,7 @@ def get_parser() -> argparse.ArgumentParser:
     parser.add_argument("--modification", type=str)
     parser.add_argument("--perm_budget", type=int, default=20)
     parser.add_argument("--perm_type", type=str, default="random")
+    parser.add_argument("--quant_bits", type=int, default=8)
     parser.add_argument("--repeat", type=int, default=10)
     parser.add_argument("--scale_attack", action="store_true")
     parser.add_argument("--simulate", action="store_true")
@@ -137,16 +140,35 @@ def evaluate_utility(
 
 
 def evaluate_robustness(
-    model: PreTrainedModel,
     model_path: str,
+    model: PreTrainedModel,
+    pw: PermutationWatermark,
     modification: str,
     finetune_weights_dir: str,
+    quant_bits: int,
+    verbose: bool = False,
 ):
+    """
+    Evaluate robustness of PermuMark, verify integrity of watermarks under model
+    modifications.
+    :param model_path: path of the transformer model to insert watermark
+    :param model: original model without watermark
+    :param pw: a PermutationWatermark instance
+    :param modification: model modification method
+    :param finetune_weights_dir: directory of fine-tuning weights
+    :param quant_bits: quantization bits
+    :param verbose: verbose output of watermark insertion and extraction
+    :return: None
+    """
     if modification == "finetune":
-        evaluate_finetune_robustness(model_path, model, finetune_weights_dir)
+        evaluate_finetune_robustness(model_path, model, finetune_weights_dir, verbose)
     elif modification == "quantization":
-        dataset = load_dataset(**DATASET)
-        evaluate_quantization_robustness(model_path, model, bits=8, dataset=dataset)
+        dataset = load_dataset(**DATASET).select(range(QUANTIZATION_DATASET_SIZE))
+        evaluate_quantization_robustness(
+            model_path, model, pw, quant_bits, dataset, verbose
+        )
+    elif modification == "pruning":
+        pass
 
 
 def evaluate_efficiency(
@@ -258,8 +280,11 @@ def main():
     # load model
     if args.verbose:
         print(f"Loading model {model_path}")
+    torch_dtype = args.torch_dtype
+    if args.modification == "quantization":
+        torch_dtype = torch.float32
     model: PreTrainedModel = AutoModelForCausalLM.from_pretrained(
-        model_path, torch_dtype="auto", trust_remote_code=True
+        model_path, torch_dtype=torch_dtype, trust_remote_code=True
     )
 
     # setup watermark
@@ -270,7 +295,9 @@ def main():
     if args.task == "utility":
         evaluate_utility(model_path, model, pw, batch_size=args.batch_size)
     elif args.task == "robustness":
-        evaluate_robustness(model, model_path, args.modification, "models/finetune")
+        evaluate_robustness(
+            model_path, model, pw, args.modification, "models/finetune", args.quant_bits
+        )
     elif args.task == "efficiency":
         evaluate_efficiency(model, pw, repeat=args.repeat)
     elif args.task == "security":
@@ -288,13 +315,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-# efficiency
-# double for
-# llama-1b: 2.566, 6.626, 5.897
-# propagation
-# llama-1b: 2.642, 6.618, 5.841
-
-# no contiguous
-# llama-2-7b: 9.877, 29.746, 25.532
-# contiguous
-# llama-2-7b:

@@ -161,16 +161,20 @@ class PermutationWatermark:
         return [random.randint(0, self.ecc.q - 1) for _ in range(self.ecc.dimension)]
 
     def insert_watermark(
-        self, model: PreTrainedModel, identity: list[int]
+        self, model: PreTrainedModel, identity: list[int], verbose: bool = False
     ) -> PermutationWatermarkInsertionResult:
         """
         Embed the identity message into the given model.
         :param model: transformer model to insert watermark into
         :param identity: identity message to embed
+        :param verbose: verbose output
         :return: a PermutationWatermarkInsertionResult instance
         """
         watermark = self.ecc.encode(identity)
         permutations = list(self.perm_map.encode_codeword(watermark, self.slots))
+        if verbose:
+            print(f"Inserted identity: {identity}")
+            print(f"Inserted watermark: {watermark}")
 
         with torch.no_grad():
             for i, (perm, slot) in enumerate(zip(permutations, self.slots)):
@@ -199,12 +203,13 @@ class PermutationWatermark:
         return PermutationWatermarkInsertionResult(identity, watermark, permutations)
 
     def extract_watermark(
-        self, source: PreTrainedModel, model: PreTrainedModel
+        self, source: PreTrainedModel, model: PreTrainedModel, verbose: bool = False
     ) -> PermutationWatermarkExtractionResult:
         """
         Extract watermark and decode to identity message from models.
         :param source: transformer model without the watermark
         :param model: transformer model with inserted watermark
+        :param verbose: verbose output
         :return: a PermutationWatermarkExtractionResult instance
         """
         permutations = []
@@ -260,6 +265,10 @@ class PermutationWatermark:
 
         watermark = list(self.perm_map.decode_perms(permutations, self.slots))
         identity, erasure_idx = self.decode_extracted_watermark(watermark)
+        if verbose:
+            print(f"Extracted identity: {identity}")
+            print(f"Extracted watermark: {watermark}")
+            print(f"Erasure index: {erasure_idx}")
 
         return PermutationWatermarkExtractionResult(
             identity, watermark, erasure_idx, eps_list, time_list, permutations
