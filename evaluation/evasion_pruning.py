@@ -6,10 +6,11 @@ from copy import deepcopy
 
 from datasets import Dataset
 from torch.nn.utils import prune
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, AutoTokenizer
 
 from eval_utils import compare_watermarks
 from permumark import PermutationWatermark
+from sparse_gpt import sparse_gpt_unstructured_pruning
 
 
 def l1_unstructured_prune_model(model: PreTrainedModel, amount: float = 0.5) -> None:
@@ -62,6 +63,20 @@ def evaluate_pruning_robustness(
         pruned_model = deepcopy(source)
         insert_res = pw.insert_watermark(pruned_model, identity, verbose=verbose)
         l1_unstructured_prune_model(pruned_model, amount=pruning_amount)
+    elif pruning_method == "sparse-gpt":
+        tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+        pruned_model = deepcopy(source).float()
+        insert_res = pw.insert_watermark(pruned_model, identity, verbose=verbose)
+        sparse_gpt_unstructured_pruning(
+            pruned_model,
+            tokenizer,
+            dataset.select(range(16)),
+            sparsity=1.0 - pruning_amount,
+            sample_num=16,
+            prune_n=0,
+            prune_m=0,
+            device="cpu",
+        )
     else:
         raise ValueError(f"Invalid pruning method: {pruning_method}")
 
