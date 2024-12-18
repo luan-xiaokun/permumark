@@ -3,10 +3,15 @@ from __future__ import annotations
 import math
 
 import torch
+import tqdm
 from datasets import Dataset
 from torch import nn
 from torch.utils.data import DataLoader
-from transformers import DataCollatorWithPadding, PreTrainedModel, PreTrainedTokenizer
+from transformers import (
+    DataCollatorWithPadding,
+    PreTrainedModel,
+    PreTrainedTokenizerBase,
+)
 
 
 torch.backends.cuda.matmul.allow_tf32 = False
@@ -78,6 +83,7 @@ class SparseGPT:
         inp = math.sqrt(2 / self.sample_num) * inp.float()
         self.h_mat += inp.matmul(inp.t())
 
+    @torch.no_grad()
     def fast_prune(
         self,
         sparsity: float,
@@ -198,36 +204,15 @@ def find_layers(module: nn.Module, name="") -> dict[str, nn.Linear]:
     return res
 
 
-def sparse_gpt_unstructured_pruning(
-    model: PreTrainedModel,
-    tokenizer: PreTrainedTokenizer,
-    dataset: Dataset,
-    sparsity: float,
-    sample_num: int,
-    prune_n: int,
-    prune_m: int,
-    block_size: int = 128,
-    perc_damp: float = 0.01,
-    device: str = "cuda",
-    bits: int = 16,
+def prepare_dataloader(
+    dataset: Dataset, tokenizer: PreTrainedTokenizerBase, max_length: int = 256
 ):
-    class Catcher(nn.Module):
-        def __init__(self, module: nn.Module) -> None:
-            super().__init__()
-            self.module = module
-
-        def forward(self, inp, **kwargs):
-            inps[cache["i"]] = inp
-            cache["i"] += 1
-            cache["attention_mask"] = kwargs["attention_mask"]
-            raise ValueError
-
     def tokenize(example):
         inputs = tokenizer(
             example["text"],
             truncation=True,
             padding="max_length",
-            max_length=256,
+            max_length=max_length,
         )
         inputs["labels"] = inputs["input_ids"].copy()
         return inputs
@@ -240,20 +225,40 @@ def sparse_gpt_unstructured_pruning(
         collate_fn=DataCollatorWithPadding(tokenizer),
     )
 
-    model.to(device)
-    use_cache = model.config.use_cache
-    model.config.use_cache = False
-    layers = model.model.layers
+    return dataloader
 
+
+def prepare_calibration_input(
+    model: PreTrainedModel,
+    dataloader: DataLoader,
+    sample_num: int,
+    device: str,
+    max_length: int = 256,
+):
+    class Catcher(nn.Module):
+        def __init__(self, module: nn.Module) -> None:
+            super().__init__()
+            self.module = module
+
+        def forward(self, inp, **kwargs):
+            inps[cache["i"]] = inp
+            cache["i"] += 1
+            cache["attention_mask"] = kwargs["attention_mask"]
+            cache["position_ids"] = kwargs["position_ids"]
+            raise ValueError
+
+    orig_dev = next(iter(model.parameters()))
+
+    layers = model.model.layers
     model.model.embed_tokens = model.model.embed_tokens.to(device)
     model.model.norm = model.model.norm.to(device)
     layers[0] = layers[0].to(device)
 
     dtype = next(iter(model.parameters())).dtype
     inps = torch.zeros(
-        (sample_num, 256, model.config.hidden_size), dtype=dtype, device=device
+        (sample_num, max_length, model.config.hidden_size), dtype=dtype, device=device
     )
-    cache = {"i": 0, "attention_mask": None}
+    cache = {"i": 0, "attention_mask": None, "position_ids": None}
 
     layers[0] = Catcher(layers[0])
     for batch in dataloader:
@@ -261,16 +266,47 @@ def sparse_gpt_unstructured_pruning(
             model(**batch.to(device))
         except ValueError:
             pass
-
-    layers[0] = layers[0].module.cpu()
-    model.model.embed_tokens = model.model.embed_tokens.cpu()
-    model.model.norm = model.model.norm.cpu()
+    layers[0] = layers[0].module.to(orig_dev)
+    model.model.embed_tokens = model.model.embed_tokens.to(orig_dev)
+    model.model.norm = model.model.norm.to(orig_dev)
     torch.cuda.empty_cache()
 
     outs = torch.zeros_like(inps)
     attention_mask = cache["attention_mask"]
+    position_ids = cache["position_ids"]
 
-    for i in range(len(layers)):
+    return inps, outs, attention_mask, position_ids
+
+
+def sparse_gpt_pruning(
+    model: PreTrainedModel,
+    tokenizer: PreTrainedTokenizerBase,
+    dataset: Dataset,
+    sparsity: float,
+    sample_num: int,
+    prune_n: int,
+    prune_m: int,
+    block_size: int = 128,
+    perc_damp: float = 0.01,
+    device: str = "cuda",
+    bits: int = 16,
+    max_length: int = 256,
+):
+    dataloader = prepare_dataloader(
+        dataset.select(range(sample_num)), tokenizer, max_length
+    )
+
+    model.to(device)
+    use_cache = model.config.use_cache
+    model.config.use_cache = False
+    layers = model.model.layers
+
+    with torch.no_grad():
+        inps, outs, attention_mask, position_ids = prepare_calibration_input(
+            model, dataloader, sample_num, device, max_length
+        )
+
+    for i in tqdm.tqdm(range(len(layers)), desc="Pruning layers"):
         layer = layers[i].to(device)
         linear_layers = find_layers(layer)
 
@@ -289,12 +325,13 @@ def sparse_gpt_unstructured_pruning(
         handles = []
         for name, linear_layer in linear_layers.items():
             handles.append(linear_layer.register_forward_hook(add_batch(name)))
-        for j in range(sample_num):
-            outs[j] = layer(
-                inps[j].unsqueeze(0),
-                attention_mask=attention_mask,
-                position_ids=torch.arange(len(inps[j]), device=device).unsqueeze(0),
-            )[0]
+        with torch.no_grad():
+            for j in range(sample_num):
+                outs[j] = layer(
+                    inps[j].unsqueeze(0),
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                )[0]
         for h in handles:
             h.remove()
 
@@ -304,12 +341,13 @@ def sparse_gpt_unstructured_pruning(
             )
             sparse_gpts[name].free()
 
-        for j in range(sample_num):
-            outs[j] = layer(
-                inps[j].unsqueeze(0),
-                attention_mask=attention_mask,
-                position_ids=torch.arange(len(inps[j]), device=device).unsqueeze(0),
-            )[0]
+        with torch.no_grad():
+            for j in range(sample_num):
+                outs[j] = layer(
+                    inps[j].unsqueeze(0),
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                )[0]
 
         layers[i] = layer.cpu()
         del layer

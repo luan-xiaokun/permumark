@@ -132,6 +132,11 @@ def eval_perplexity(
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, clean_up_tokenizer_exceptions=False, trust_remote_code=True
     )
+    if tokenizer.pad_token is None:
+        if "Llama-3" in model_path:
+            tokenizer.pad_token_id = 128004
+        else:
+            tokenizer.pad_token = tokenizer.eos_token
     texts = dataset["text"]
     input_ids_list = []
     for i in tqdm.tqdm(range(0, len(texts), batch_size)):

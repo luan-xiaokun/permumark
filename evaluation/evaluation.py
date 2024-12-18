@@ -37,6 +37,8 @@ DATASET = {
     "split": "train",
 }
 QUANTIZATION_DATASET_SIZE = 512
+PRUNING_CALIBRATION_SIZE = 32
+PRUNING_TOKENIZE_MAX_LENGTH = 100
 
 
 def get_parser() -> argparse.ArgumentParser:
@@ -178,6 +180,8 @@ def evaluate_robustness(
             pruning_method,
             dataset=dataset,
             pruning_amount=pruning_amount,
+            calibration_sample_num=PRUNING_CALIBRATION_SIZE,
+            max_length=PRUNING_TOKENIZE_MAX_LENGTH,
             verbose=verbose,
         )
     elif modification == "quantization":

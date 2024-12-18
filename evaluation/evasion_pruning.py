@@ -10,7 +10,8 @@ from transformers import PreTrainedModel, AutoTokenizer
 
 from eval_utils import compare_watermarks
 from permumark import PermutationWatermark
-from sparse_gpt import sparse_gpt_unstructured_pruning
+from sparse_gpt import sparse_gpt_pruning
+from wanda import wanda_pruning
 
 
 def l1_unstructured_prune_model(model: PreTrainedModel, amount: float = 0.5) -> None:
@@ -54,6 +55,8 @@ def evaluate_pruning_robustness(
     pruning_method: str,
     dataset: Dataset | None = None,
     pruning_amount: float = 0.5,
+    calibration_sample_num: int = 16,
+    max_length: int = 50,
     verbose: bool = False,
 ):
     print(f"Evaluating pruning robustness ({pruning_method}, {pruning_amount})")
@@ -63,20 +66,25 @@ def evaluate_pruning_robustness(
         pruned_model = deepcopy(source)
         insert_res = pw.insert_watermark(pruned_model, identity, verbose=verbose)
         l1_unstructured_prune_model(pruned_model, amount=pruning_amount)
-    elif pruning_method == "sparse-gpt":
+    elif pruning_method in ("sparse-gpt", "wanda"):
         tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
         pruned_model = deepcopy(source).float()
         insert_res = pw.insert_watermark(pruned_model, identity, verbose=verbose)
-        sparse_gpt_unstructured_pruning(
+        pruning_func = (
+            sparse_gpt_pruning if pruning_method == "sparse_gpt" else wanda_pruning
+        )
+        pruning_func(
             pruned_model,
             tokenizer,
-            dataset.select(range(16)),
-            sparsity=1.0 - pruning_amount,
-            sample_num=16,
+            dataset,
+            sparsity=pruning_amount,
+            sample_num=calibration_sample_num,
             prune_n=0,
             prune_m=0,
-            device="cpu",
+            device="cuda",
+            max_length=max_length,
         )
+        pruned_model.cpu()
     else:
         raise ValueError(f"Invalid pruning method: {pruning_method}")
 
