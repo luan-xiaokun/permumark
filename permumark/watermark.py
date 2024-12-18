@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import random
 import warnings
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import NamedTuple
 
 import torch
@@ -85,7 +86,10 @@ class PermutationWatermark:
             config, "num_key_value_heads", self.num_attention_heads
         )
         self.group_size = self.num_attention_heads // self.num_kv_heads
-        self.head_dim = config.hidden_size // self.num_attention_heads
+        if hasattr(config, "head_dim"):
+            self.head_dim = config.head_dim
+        else:
+            self.head_dim = config.hidden_size // self.num_attention_heads
         self.slots = ("embeddings",) + ("attention", "feed_forward") * self.layer_num
         gf_size, id_length = get_ecc_params(
             self.num_kv_heads, self.group_size, total_id_num, max_corrupt_prob
@@ -203,65 +207,116 @@ class PermutationWatermark:
         return PermutationWatermarkInsertionResult(identity, watermark, permutations)
 
     def extract_watermark(
-        self, source: PreTrainedModel, model: PreTrainedModel, verbose: bool = False
+        self,
+        source: PreTrainedModel,
+        model: PreTrainedModel,
+        verbose: bool = False,
+        max_workers: int = 12,
     ) -> PermutationWatermarkExtractionResult:
         """
         Extract watermark and decode to identity message from models.
         :param source: transformer model without the watermark
         :param model: transformer model with inserted watermark
         :param verbose: verbose output
+        :param max_workers: number of workers, -1 means no multithreading
         :return: a PermutationWatermarkExtractionResult instance
         """
-        permutations = []
-        eps_list = []
-        time_list = []
-        # we use a sequential extraction process for now
-        with torch.no_grad():
-            for i, slot in enumerate(self.slots):
-                if slot == "embeddings":
-                    result = permutation_inv.extract_embeddings_perm(source, model)
-                    permutations.append(result.perm)
-                    eps_list.append(result.eps_norm)
-                    time_list.append(result.time)
-                    # NOTE propagated to other layers
-                    permutation_inv.permute_embeddings(
-                        model, utils.get_perm_inv(result.perm)
-                    )
-                elif slot == "feed_forward":
-                    result = permutation_inv.extract_feed_forward_perm(
-                        source, model, (i - 1) // 2
-                    )
-                    permutations.append(result.perm)
-                    eps_list.append(result.eps_norm)
-                    time_list.append(result.time)
-                elif slot == "attention":
-                    result_q, result_kv = permutation_inv.extract_attention_heads_perm(
-                        source, model, (i - 1) // 2
-                    )
-                    kv_base_perm = utils.extract_block_permutation(
-                        result_kv.block_perm, self.head_dim
-                    )
-                    assert isinstance(kv_base_perm, list)
-                    if self.group_size == 1:
-                        permutations.append(kv_base_perm)
-                    else:
-                        group_perms = []
-                        stride = self.head_dim * self.group_size
-                        for j in range(0, len(result_q.block_perm), stride):
-                            block = torch.as_tensor(result_q.block_perm[j : j + stride])
-                            block = block - block.min()
-                            group_perm = utils.extract_block_permutation(
-                                block, self.head_dim
+        if max_workers <= 0:
+            permutations: list = []
+            eps_list = []
+            time_list = []
+            with torch.no_grad():
+                for i, slot in enumerate(self.slots):
+                    if slot == "embeddings":
+                        result = permutation_inv.extract_embeddings_perm(source, model)
+                        permutations.append(result.perm)
+                        eps_list.append(result.eps_norm)
+                        time_list.append(result.time)
+                        # NOTE propagated to other layers
+                        permutation_inv.permute_embeddings(
+                            model, utils.get_perm_inv(result.perm)
+                        )
+                    elif slot == "feed_forward":
+                        result = permutation_inv.extract_feed_forward_perm(
+                            source, model, (i - 1) // 2
+                        )
+                        permutations.append(result.perm)
+                        eps_list.append(result.eps_norm)
+                        time_list.append(result.time)
+                    elif slot == "attention":
+                        result_q, result_kv = (
+                            permutation_inv.extract_attention_heads_perm(
+                                source, model, (i - 1) // 2
                             )
-                            if isinstance(group_perm, tuple):
-                                raise permutation_inv.ExtractionBlockPermutationError(
-                                    f"block={group_perm[0]}, perm={group_perm[1]}"
-                                )
-                            group_perms.append(group_perm)
-                        permutations.append((kv_base_perm, group_perms))
-
-                    eps_list.append(max(result_q.eps_norm, result_kv.eps_norm))
-                    time_list.append(max(result_q.time, result_kv.time))
+                        )
+                        attn_perm = self.decode_attention_qkv_results(
+                            result_q, result_kv
+                        )
+                        permutations.append(attn_perm)
+                        eps_list.append(max(result_q.eps_norm, result_kv.eps_norm))
+                        time_list.append(max(result_q.time, result_kv.time))
+        else:
+            permutations: list = [None] * len(self.slots)
+            eps_list = [0.0] * len(self.slots)
+            time_list = [0.0] * len(self.slots)
+            cost_matrices = []
+            with torch.no_grad():
+                for i, slot in enumerate(self.slots):
+                    if slot == "embeddings":
+                        result = permutation_inv.extract_embeddings_perm(source, model)
+                        permutations[0] = result.perm
+                        eps_list[0] = result.eps_norm
+                        time_list[0] = result.time
+                        # NOTE propagated to other layers
+                        permutation_inv.permute_embeddings(
+                            model, utils.get_perm_inv(result.perm)
+                        )
+                    elif slot == "feed_forward":
+                        ff_cm = permutation_inv.build_feed_forward_perm_cost_matrix(
+                            source, model, (i - 1) // 2
+                        )
+                        cost_matrices.append(ff_cm)
+                    elif slot == "attention":
+                        attn_cm = (
+                            permutation_inv.build_attention_heads_perm_cost_matrix(
+                                source, model, (i - 1) // 2
+                            )
+                        )
+                        cost_matrices.append(attn_cm)
+            futures = []
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                for i, cm in enumerate(cost_matrices):
+                    if isinstance(cm, torch.Tensor):
+                        futures.append(
+                            executor.submit(
+                                permutation_inv.solve_feed_forward_perm_by_lsa,
+                                *(source, model, i // 2, cm),
+                            )
+                        )
+                    else:
+                        assert isinstance(cm, tuple) and len(cm) == 2
+                        futures.append(
+                            executor.submit(
+                                permutation_inv.solve_attention_heads_perm_by_lsa,
+                                *(source, model, i // 2, cm),
+                            )
+                        )
+                for future in as_completed(futures):
+                    index, *result = future.result()
+                    if len(result) == 1:
+                        permutations[2 * index + 2] = result[0].perm
+                        eps_list[2 * index + 2] = result[0].eps_norm
+                        time_list[2 * index + 2] = result[0].time
+                    else:
+                        result_q, result_kv = result
+                        attn_perm = self.decode_attention_qkv_results(
+                            result_q, result_kv
+                        )
+                        permutations[2 * index + 1] = attn_perm
+                        eps_list[2 * index + 1] = max(
+                            result_q.eps_norm, result_kv.eps_norm
+                        )
+                        time_list[2 * index + 1] = max(result_q.time, result_kv.time)
 
         watermark = list(self.perm_map.decode_perms(permutations, self.slots))
         identity, erasure_idx = self.decode_extracted_watermark(watermark)
@@ -269,6 +324,7 @@ class PermutationWatermark:
             print(f"Extracted identity: {identity}")
             print(f"Extracted watermark: {watermark}")
             print(f"Erasure index: {erasure_idx}")
+            print(f"Average eps: {sum(eps_list) / len(eps_list):.6f}")
 
         return PermutationWatermarkExtractionResult(
             identity, watermark, erasure_idx, eps_list, time_list, permutations
@@ -290,3 +346,29 @@ class PermutationWatermark:
             else:
                 erasure_idx.append(i)
         return self.ecc.decode(watermark_, erasure_idx), erasure_idx
+
+    def decode_attention_qkv_results(
+        self,
+        result_q: permutation_inv.PermExtractionResult,
+        result_kv: permutation_inv.PermExtractionResult,
+    ) -> list[int] | tuple:
+        kv_base_perm = utils.extract_block_permutation(
+            result_kv.block_perm, self.head_dim
+        )
+        assert isinstance(kv_base_perm, list)
+        eps = max(result_q.eps_norm, result_kv.eps_norm)
+        time = max(result_q.time, result_kv.time)
+        if self.group_size == 1:
+            return kv_base_perm
+        group_perms = []
+        stride = self.head_dim * self.group_size
+        for j in range(0, len(result_q.block_perm), stride):
+            block = torch.as_tensor(result_q.block_perm[j : j + stride])
+            block = block - block.min()
+            group_perm = utils.extract_block_permutation(block, self.head_dim)
+            if isinstance(group_perm, tuple):
+                raise permutation_inv.ExtractionBlockPermutationError(
+                    f"block={group_perm[0]}, perm={group_perm[1]}"
+                )
+            group_perms.append(group_perm)
+        return kv_base_perm, group_perms

@@ -27,29 +27,24 @@ def matrix_normalization(
     return (x - x.mean(dim=dim, keepdim=True)) / (x.std(dim=dim, keepdim=True) + eps)
 
 
-def extract_perm(
+def build_cost_matrix(
     mat1: torch.Tensor,
     mat2: torch.Tensor,
     dim: str = "row",
     block_size: int | None = None,
     device: str | None = None,
-) -> PermExtractionResult:
-    """Solve equation B = P @ A + eps, where P is a permutation matrix and
-    eps is a noise matrix, the goal is to minimize the Frobenius norm of eps.
+) -> torch.Tensor:
+    """Build cost matrix to solve equation B = P @ A + eps by linear sum assignment,
+    where P is a permutation matrix and eps is a noise matrix, the goal is to minimize
+    the Frobenius norm of eps.
     :param mat1: the original matrix, shape (m, n)
     :param mat2: the watermarked matrix, shape (m, n)
     :param dim: the dimension to permute. Defaults to "row"
     :param block_size: the block size to use. Defaults to None
     :param device: the device to use. Defaults to None, use cuda if available
-    :return a tuple of permutation list and the Frobenius norm of eps
+    :return a cost matrix of shape (m, m), or (n, n) if dim is "col"
     """
 
-    def get_eps_norm(
-        m1: torch.Tensor, m2: torch.Tensor, p: list[int] | torch.Tensor
-    ) -> float:
-        return torch.norm(m2 - m1[p, :]).item() / torch.norm(m1).item()
-
-    start_time = time()
     assert mat1.shape == mat2.shape, f"Different shapes {mat1.shape} and {mat2.shape}"
 
     # NOTE cdist does not support half precision
@@ -75,9 +70,35 @@ def extract_perm(
             cost_matrix = torch.cdist(mat1, mat2, p=2).cpu()
     else:
         cost_matrix = compute_block_perm_cost_matrix(mat1, mat2, block_size).cpu()
-    # cost_matrix = cost_matrix + 1e-6 * torch.rand_like(cost_matrix)
 
-    # solve the linear assignment problem
+    return cost_matrix
+
+
+def solve_perm_by_lsa(
+    mat1: torch.Tensor,
+    mat2: torch.Tensor,
+    cost_matrix: torch.Tensor,
+    dim: str = "row",
+    block_size: int | None = None,
+):
+    """
+    Solve a linear sum assignment problem to find the optimal permutation.
+    :param mat1: the original matrix, shape (m, n)
+    :param mat2: the watermarked matrix, shape (m, n)
+    :param cost_matrix: contains distances between each row of mat1 and mat2
+    :param dim: the dimension to permute. Defaults to "row"
+    :param block_size: the block size to use. Defaults to None
+    :return: a PermExtractionResult instance
+    """
+    if dim == "col":
+        mat1, mat2 = mat1.T, mat2.T
+
+    def get_eps_norm(
+        m1: torch.Tensor, m2: torch.Tensor, p: list[int] | torch.Tensor
+    ) -> float:
+        return torch.norm(m2 - m1[p, :]).item() / torch.norm(m1).item()
+
+    start_time = time()
     row_ind, col_ind = linear_sum_assignment(cost_matrix.numpy())
     perm = torch.full((len(col_ind),), 0, dtype=torch.long)
     perm[col_ind] = torch.tensor(row_ind, dtype=torch.long)
@@ -91,9 +112,9 @@ def extract_perm(
         eps_norm = get_eps_norm(mat1, mat2, block_perm)
     else:
         eps_norm = get_eps_norm(mat1, mat2, perm)
-
     end_time = time()
-    result = PermExtractionResult(
+
+    return PermExtractionResult(
         perm=perm,
         eps_norm=eps_norm,
         block_size=block_size,
@@ -101,7 +122,27 @@ def extract_perm(
         time=end_time - start_time,
     )
 
-    return result
+
+def extract_perm(
+    mat1: torch.Tensor,
+    mat2: torch.Tensor,
+    dim: str = "row",
+    block_size: int | None = None,
+    device: str | None = None,
+) -> PermExtractionResult:
+    """Solve equation B = P @ A + eps, where P is a permutation matrix and
+    eps is a noise matrix, the goal is to minimize the Frobenius norm of eps.
+    :param mat1: the original matrix, shape (m, n)
+    :param mat2: the watermarked matrix, shape (m, n)
+    :param dim: the dimension to permute. Defaults to "row"
+    :param block_size: the block size to use. Defaults to None
+    :param device: the device to use. Defaults to None, use cuda if available
+    :return: a tuple of permutation list and the Frobenius norm of eps
+    """
+    cost_matrix = build_cost_matrix(mat1, mat2, dim, block_size, device)
+    cost_matrix = cost_matrix + 1e-6 * torch.rand_like(cost_matrix)
+    # solve the linear assignment problem
+    return solve_perm_by_lsa(mat1, mat2, cost_matrix, dim, block_size)
 
 
 def compute_block_perm_cost_matrix(

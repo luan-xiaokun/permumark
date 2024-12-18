@@ -7,7 +7,12 @@ import warnings
 import torch
 from transformers import PreTrainedModel
 
-from .permutation_extraction import PermExtractionResult, extract_perm
+from .permutation_extraction import (
+    PermExtractionResult,
+    extract_perm,
+    build_cost_matrix,
+    solve_perm_by_lsa,
+)
 
 
 class FunctionalInvariantError(Exception):
@@ -136,9 +141,43 @@ def extract_feed_forward_perm(
     :param index: index of the feed forward layer
     :return: PermExtractionResult
     """
+    cost_matrix = build_feed_forward_perm_cost_matrix(source, model, index)
+    return solve_feed_forward_perm_by_lsa(source, model, index, cost_matrix)[1]
+
+
+def build_feed_forward_perm_cost_matrix(
+    source: PreTrainedModel, model: PreTrainedModel, index: int
+) -> torch.Tensor:
+    """
+    Build cost matrix for feed forward permutations.
+    :param source: source model without permutation
+    :param model: model to extract permutations from
+    :param index: index of the feed forward layer
+    :return: a cost matrix for feed forward permutations
+    """
     w1 = source.model.layers[index].mlp.gate_proj.weight.data
     w1_ = model.model.layers[index].mlp.gate_proj.weight.data
-    return extract_perm(w1, w1_)
+    return build_cost_matrix(w1, w1_)
+
+
+def solve_feed_forward_perm_by_lsa(
+    source: PreTrainedModel,
+    model: PreTrainedModel,
+    index: int,
+    cost_matrix: torch.Tensor,
+) -> tuple[int, PermExtractionResult]:
+    """
+    Solve feed forward permutations by linear sum assignment formulation.
+    :param source: source model without permutation
+    :param model: model to extract permutations from
+    :param index: index of the feed forward layer
+    :param cost_matrix: cost matrix for feed forward permutations
+    :return: PermExtractionResult
+    """
+    w1 = source.model.layers[index].mlp.gate_proj.weight.data
+    w1_ = model.model.layers[index].mlp.gate_proj.weight.data
+    cost_matrix = cost_matrix + 1e-8 * torch.rand_like(cost_matrix)
+    return index, solve_perm_by_lsa(w1, w1_, cost_matrix)
 
 
 def extract_embeddings_perm(
@@ -171,21 +210,71 @@ def extract_attention_heads_perm(
     :param index: index of the attention layer
     :return: two PermExtractionResult for query and key-value heads
     """
-    num_attention_heads = source.config.num_attention_heads
-    block_size = int(source.config.hidden_size / num_attention_heads)
+    cost_matrices = build_attention_heads_perm_cost_matrix(source, model, index)
+    index, *results = solve_attention_heads_perm_by_lsa(
+        source, model, index, cost_matrices
+    )
+    return results
+
+
+def build_attention_heads_perm_cost_matrix(
+    source: PreTrainedModel, model: PreTrainedModel, index: int
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """
+    Build attention heads permutation cost matrices.
+    :param source: source model without permutation
+    :param model: model to extract permutations from
+    :param index: index of the attention layer
+    :return: two cost matrices for query and key-value heads
+    """
+    num_attention_heads = getattr(source.config, "num_attention_heads")
+    if hasattr(source.config, "head_dim"):
+        block_size = int(source.config.head_dim)
+    else:
+        assert hasattr(source.config, "hidden_size")
+        block_size = int(source.config.hidden_size / num_attention_heads)
+
+    wv = source.model.layers[index].self_attn.v_proj.weight.data
+    wv_ = model.model.layers[index].self_attn.v_proj.weight.data
+    cost_matrix_kv = build_cost_matrix(wv, wv_, block_size=block_size)
+    wo = source.model.layers[index].self_attn.o_proj.weight.data
+    wo_ = model.model.layers[index].self_attn.o_proj.weight.data
+    cost_matrix_q = build_cost_matrix(wo, wo_, dim="col", block_size=block_size)
+
+    return cost_matrix_q, cost_matrix_kv
+
+
+def solve_attention_heads_perm_by_lsa(
+    source: PreTrainedModel,
+    model: PreTrainedModel,
+    index: int,
+    cost_matrices: tuple[torch.Tensor, torch.Tensor],
+) -> tuple[int, PermExtractionResult, PermExtractionResult]:
     wv = source.model.layers[index].self_attn.v_proj.weight.data
     wv_ = model.model.layers[index].self_attn.v_proj.weight.data
     wo = source.model.layers[index].self_attn.o_proj.weight.data
     wo_ = model.model.layers[index].self_attn.o_proj.weight.data
 
-    result_q = extract_perm(wo, wo_, dim="col", block_size=block_size)
+    num_attention_heads = getattr(source.config, "num_attention_heads")
+    if hasattr(source.config, "head_dim"):
+        block_size = int(source.config.head_dim)
+    else:
+        assert hasattr(source.config, "hidden_size")
+        block_size = int(source.config.hidden_size / num_attention_heads)
+
+    cost_matrix_q, cost_matrix_kv = cost_matrices
+    cost_matrix_q = cost_matrix_q + 1e-8 * torch.rand_like(cost_matrix_q)
+    cost_matrix_kv = cost_matrix_kv + 1e-8 * torch.rand_like(cost_matrix_kv)
+    result_q = solve_perm_by_lsa(
+        wo, wo_, cost_matrix_q, dim="col", block_size=block_size
+    )
     if result_q.block_perm is None:
         raise ExtractionBlockPermutationError(
             f"block_size={result_q.block_size}, perm={result_q.perm}"
         )
-    result_kv = extract_perm(wv, wv_, block_size=block_size)
+    result_kv = solve_perm_by_lsa(wv, wv_, cost_matrix_kv, block_size=block_size)
     if result_kv.block_perm is None:
         raise ExtractionBlockPermutationError(
             f"block_size={result_kv.block_size}, perm={result_kv.perm}"
         )
-    return result_q, result_kv
+    return index, result_q, result_kv
