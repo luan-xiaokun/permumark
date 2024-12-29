@@ -103,6 +103,8 @@ def permute_embeddings(model: PreTrainedModel, perm: list[int] | torch.Tensor) -
         layer.mlp.up_proj.weight.data = layer.mlp.up_proj.weight.data[:, perm]
         layer.mlp.down_proj.weight.data = layer.mlp.down_proj.weight.data[perm, :]
     model.model.norm.weight.data = model.model.norm.weight.data[perm]
+    if not model.config.tie_word_embeddings:
+        model.lm_head.weight.data = model.lm_head.weight.data[:, perm]
 
 
 def permute_attention_heads(

@@ -68,7 +68,7 @@ class PermutationMapping:
         bang_group_size_exp = bang_group_size**num_kv_heads
         bang_hkv = subfactorial(num_kv_heads)
 
-        prime1 = int(bang_group_size_exp)
+        prime1 = find_closest_prime(int(bang_group_size_exp))
         prime2 = find_closest_prime(int(bang_hkv))
         if math.gcd(prime1, prime2) != 1:
             prime2 = find_closest_prime(prime2 - 1)
@@ -136,7 +136,7 @@ class PermutationMapping:
 
         # recover rem2
         rem2 = derangement_rank(kv_base_perm)
-        if rem2 is None:
+        if rem2 is None or rem2 >= self.alphas["prime2"]:
             return None
 
         # recover rem1
@@ -148,6 +148,8 @@ class PermutationMapping:
                 return None
             group_digits.append(gd)
         rem1 = sum(d * bang_group_size**i for i, d in enumerate(group_digits[::-1]))
+        if rem1 >= self.alphas["prime1"]:
+            return None
 
         # apply Chinese remainder theorem
         digit = solve_modulo_equations(

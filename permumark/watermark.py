@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import math
 import random
-import warnings
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import NamedTuple
 
@@ -32,12 +31,14 @@ def get_ecc_params(
     size = int(subfactorial(num_kv_heads))
     if group_size > 1:
         size *= int(subfactorial(group_size) ** num_kv_heads)
-    power = math.floor(math.log2(max_corrupt_prob * size))
-    gf_size = int(2**power)
-    if power < 8:
-        warnings.warn(f"Finite filed size too small ({gf_size})")
-    length = int(math.ceil(math.log(total_id_num) / math.log(gf_size)))
-    return gf_size, length
+    upper = math.floor(math.log2(max_corrupt_prob * size))
+    k = 1
+    while True:
+        lower = math.ceil(math.log2(total_id_num) / k)
+        if lower <= upper:
+            gf_size = int(2**lower)
+            return gf_size, k
+        k += 1
 
 
 class PermutationWatermarkInsertionResult(NamedTuple):
