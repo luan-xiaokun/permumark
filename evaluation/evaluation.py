@@ -10,7 +10,7 @@ from copy import deepcopy
 import torch
 from datasets import load_dataset
 from tqdm import tqdm
-from transformers import AutoModelForCausalLM, PreTrainedModel
+from transformers import AutoModelForCausalLM, PreTrainedModel, AutoTokenizer
 
 import attacks
 import eval_utils
@@ -113,7 +113,6 @@ def evaluate_utility(
     model_path: str,
     model: PreTrainedModel,
     pw: PermutationWatermark,
-    batch_size: int = 4,
 ) -> None:
     """
     Evaluate utility of watermarked model, evaluate distortion on predicted tokens
@@ -121,26 +120,26 @@ def evaluate_utility(
     :param model_path: path to model, used to load tokenizer
     :param model: transformer model to evaluate
     :param pw: a PermutationWatermark instance
-    :param batch_size: batch size used for evaluation
     :return: None
     """
     dataset = load_dataset(**DATASET)
+    tokenizer = AutoTokenizer.from_pretrained(model_path)
+    if tokenizer.pad_token is None:
+        tokenizer.pad_token = tokenizer.eos_token
 
     # get predicted tokens and perplexity
-    predicted0 = eval_utils.eval_predicted_tokens(
-        model, model_path, dataset, batch_size
+    predicted0, ppl0 = eval_utils.eval_predicted_tokens_and_perplexity(
+        model, model_path, dataset
     )
-    ppl0 = eval_utils.eval_perplexity(model, model_path, dataset)
     # insert watermark and re-evaluate predicted tokens and perplexity
     _ = pw.insert_watermark(model, pw.generate_random_identity())
-    predicted1 = eval_utils.eval_predicted_tokens(
-        model, model_path, dataset, batch_size
+    predicted1, ppl1 = eval_utils.eval_predicted_tokens_and_perplexity(
+        model, model_path, dataset
     )
-    ppl1 = eval_utils.eval_perplexity(model, model_path, dataset)
     diff = sum(p0 != p1 for p0, p1 in zip(predicted0, predicted1))
     total = len(predicted0)
 
-    print(f"Predicted token distortion: {diff}/{total} ({diff / total:.2%})")
+    print(f"Token distortion: {diff}/{total} ({diff / total:.2%})")
     print(f"Perplexity {ppl0:.3f} -> {ppl1:.3f}")
 
 
@@ -313,7 +312,7 @@ def main():
         print(pw)
 
     if args.task == "utility":
-        evaluate_utility(model_path, model, pw, batch_size=args.batch_size)
+        evaluate_utility(model_path, model, pw)
     elif args.task == "robustness":
         evaluate_robustness(
             model_path,

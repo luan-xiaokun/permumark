@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from itertools import chain
+
 import torch
 import tqdm
 from datasets import Dataset
@@ -118,17 +120,19 @@ def eval_predicted_tokens(
     return predicted_next_token_ids
 
 
-def eval_perplexity(
-    model, model_path, dataset: Dataset, batch_size: int = 128
-) -> float:
+def eval_predicted_tokens_and_perplexity(
+    model, model_path, dataset: Dataset
+) -> tuple[list[int], float]:
     """
     Evaluate the model by calculating the perplexity.
     :param model: model to evaluate
     :param model_path: path of the model and its tokenizer
     :param dataset: dataset to evaluate
-    :param batch_size: batch size for evaluation
     :return perplexity
     """
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model.eval()
+    model.to(device)
     tokenizer = AutoTokenizer.from_pretrained(
         model_path, clean_up_tokenizer_exceptions=False, trust_remote_code=True
     )
@@ -137,36 +141,44 @@ def eval_perplexity(
             tokenizer.pad_token_id = 128004
         else:
             tokenizer.pad_token = tokenizer.eos_token
-    texts = dataset["text"]
-    input_ids_list = []
-    for i in tqdm.tqdm(range(0, len(texts), batch_size)):
-        size = min(batch_size, len(texts) - i)
-        encodings = tokenizer(texts[i : i + size], return_tensors="pt", padding=True)
-        for ids in encodings["input_ids"]:
-            input_ids_list.extend(ids[ids != tokenizer.pad_token_id].tolist())
 
-    stride = 256
-    seq_len = len(input_ids_list)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    encodings = tokenizer(dataset["text"], add_special_tokens=False)
+    flat_input_ids = list(chain.from_iterable(encodings.input_ids))
+    encodings.input_ids = torch.tensor([flat_input_ids])
+    stride = 4096
+    seq_len = encodings.input_ids.size(1)
+
+    predicted_next_token_ids = []
     nlls = []
-
-    model.eval()
-    model.to(device)
-
+    prev_end_loc = 0
     for begin_loc in tqdm.tqdm(range(0, seq_len, stride)):
-        end_loc = min(begin_loc + 2 * stride, seq_len)
-        input_ids = (
-            torch.tensor(input_ids_list[begin_loc:end_loc]).unsqueeze(0).to(device)
-        )
+        end_loc = min(begin_loc + stride, seq_len)
+        trg_len = end_loc - prev_end_loc  # may be different from stride on last loop
+        input_ids = encodings.input_ids[:, begin_loc:end_loc].to(device)
+        if tokenizer.bos_token is not None:
+            input_ids[:, 0] = tokenizer.bos_token_id  # give a bos token
         target_ids = input_ids.clone()
+        target_ids[:, :-trg_len] = -100
 
         with torch.no_grad():
             outputs = model(input_ids, labels=target_ids)
-            nlls.append(outputs.loss)
+
+            # loss is calculated using CrossEntropyLoss which averages over valid labels
+            # N.B. the model only calculates loss over trg_len - 1 labels, because it internally shifts the labels
+            # to the left by 1.
+            neg_log_likelihood = outputs.loss
+            next_token_ids = outputs.logits[0].argmax(-1).tolist()
+
+        predicted_next_token_ids.extend(next_token_ids)
+        nlls.append(neg_log_likelihood)
+
+        prev_end_loc = end_loc
         if end_loc == seq_len:
             break
 
-    return torch.exp(torch.stack(nlls).mean()).item()
+    ppl = torch.exp(torch.stack(nlls).mean())
+
+    return predicted_next_token_ids, ppl.item()
 
 
 def compare_watermarks(

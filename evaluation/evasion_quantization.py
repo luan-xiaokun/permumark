@@ -213,9 +213,11 @@ def evaluate_quantization_robustness(
             if "Llama-3" in model_path:
                 tokenizer.pad_token_id = 128004
             tokenizer.pad_token = tokenizer.eos_token
+        model.to("cuda")  # auto-gptq requires quantization on cuda
         model.quantize(list(preprocess_dataset(dataset, tokenizer, 1.0)))
         quantized_model = model.model
 
+    quantized_model.to("cpu")
     recovered_model = dequantize_model(quantized_model, copy_model, bits)
     extract_res = pw.extract_watermark(source, recovered_model, verbose=verbose)
     diff, total, robustness = compare_watermarks(insert_res, extract_res)

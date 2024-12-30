@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 
 import torch
-from sympy.functions.combinatorial.factorials import subfactorial
+from sympy.functions.combinatorial.factorials import subfactorial, factorial
 from transformers import PreTrainedModel
 
 from permumark import PermutationWatermark, permutation_inv, utils
@@ -19,14 +19,16 @@ def make_permutation(size: int, perm_type: str = "random") -> torch.Tensor:
     :param perm_type: six types of permutations are supported, including
     - random: a randomly sampled permutation
     - swap: a permutation with a random pair swap
-    - reverse: a permutation that reverses the sequence, no randomness
     - shift: a permutation that shifts the sequence by some random offset
     - derangement: a randomly sampled derangement
     - hybrid: randomly use one of the above types
     :return: a permutation in tensor form
     """
     if perm_type == "random":
-        return torch.randperm(size)
+        perm = torch.randperm(size)
+        while torch.equal(perm, torch.arange(size)):
+            perm = torch.randperm(size)
+        return perm
     if perm_type == "swap":
         perm = torch.arange(size)
         # get two random indices and swap them
@@ -35,11 +37,9 @@ def make_permutation(size: int, perm_type: str = "random") -> torch.Tensor:
             j = random.randint(0, size - 1)
         perm[i], perm[j] = perm[j], perm[i]
         return perm
-    if perm_type == "reverse":
-        return torch.arange(size - 1, -1, -1)
     if perm_type == "shift":
         perm = torch.arange(size)
-        i = random.randint(0, size - 1)
+        i = random.randint(1, size - 1)
         return torch.cat((perm[i:], perm[:i]))
     if perm_type == "derangement":
         i = random.randint(0, int(subfactorial(size)) - 1)
@@ -47,7 +47,7 @@ def make_permutation(size: int, perm_type: str = "random") -> torch.Tensor:
         return torch.as_tensor(perm)
     if perm_type == "hybrid":
         return make_permutation(
-            size, random.choice(["random", "swap", "reverse", "shift", "derangement"])
+            size, random.choice(["random", "swap", "shift", "derangement"])
         )
 
     raise ValueError(f"Invalid permutation perm_type '{perm_type}'")
@@ -127,7 +127,7 @@ def simulate_attacks(
 def scaling_attack(model: PreTrainedModel, index: int) -> None:
     """
     Scaling/unscaling attack on Llama model.
-    Two layernorms are scaled by a random factor.
+    Two layer norms are scaled by a random factor.
     :param model: the Llama model to attack
     :param index: index of the layer to attack
     :return None
@@ -137,7 +137,7 @@ def scaling_attack(model: PreTrainedModel, index: int) -> None:
     dtype = layer.post_attention_layernorm.weight.data.dtype
 
     # input layernorm
-    mu = (2.0 * torch.rand(hidden_size).to(dtype) - 1.0).exp()
+    mu = 10 ** (2.0 * torch.rand(hidden_size).to(dtype) - 1.0)
 
     layer.input_layernorm.weight.data = mu * layer.input_layernorm.weight.data
 
@@ -146,7 +146,7 @@ def scaling_attack(model: PreTrainedModel, index: int) -> None:
     layer.self_attn.v_proj.weight.data = 1.0 / mu * layer.self_attn.v_proj.weight.data
 
     # post attention layernorm
-    mu = (2.0 * torch.rand(hidden_size).to(dtype) - 1.0).exp()
+    mu = 10 ** (2.0 * torch.rand(hidden_size).to(dtype) - 1.0)
 
     layer.post_attention_layernorm.weight.data = (
         mu * layer.post_attention_layernorm.weight.data
