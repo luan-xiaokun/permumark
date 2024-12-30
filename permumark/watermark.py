@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import math
 import random
+from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 import torch
+import tqdm
 from sympy.functions.combinatorial.factorials import subfactorial
 from transformers import PretrainedConfig, PreTrainedModel
 
@@ -60,7 +62,41 @@ class PermutationWatermarkExtractionResult(NamedTuple):
     permutations: list[list[int] | tuple[list[int], list[list[int]]]]
 
 
-class PermutationWatermark:
+class TransformerWatermark(ABC):
+    @abstractmethod
+    def __len__(self) -> int:
+        pass
+
+    @abstractmethod
+    def to_dict(self) -> dict:
+        pass
+
+    @classmethod
+    @abstractmethod
+    def from_dict(cls, params: dict) -> TransformerWatermark:
+        pass
+
+    @abstractmethod
+    def generate_random_identity(self) -> list[int]:
+        pass
+
+    @abstractmethod
+    def insert_watermark(
+        self,
+        model: PreTrainedModel,
+        identity: list[int],
+        **kwargs,
+    ) -> Any:
+        pass
+
+    @abstractmethod
+    def extract_watermark(
+        self, source: PreTrainedModel, model: PreTrainedModel, **kwargs
+    ) -> Any:
+        pass
+
+
+class PermutationWatermark(TransformerWatermark):
     """
     Error correction enhanced permutation watermark for transformer models.
     :param config: configuration of the model to watermark
@@ -353,12 +389,17 @@ class PermutationWatermark:
         result_q: permutation_inv.PermExtractionResult,
         result_kv: permutation_inv.PermExtractionResult,
     ) -> list[int] | tuple:
+        """
+        Decode extracted permutations in attention heads.
+        :param result_q: extracted permutation on query weights
+        :param result_kv: extracted permutation on key/value weights
+        :return: the base permutation on key/value heads, and permutations for
+        all query attention groups
+        """
         kv_base_perm = utils.extract_block_permutation(
             result_kv.block_perm, self.head_dim
         )
         assert isinstance(kv_base_perm, list)
-        eps = max(result_q.eps_norm, result_kv.eps_norm)
-        time = max(result_q.time, result_kv.time)
         if self.group_size == 1:
             return kv_base_perm
         group_perms = []
@@ -373,3 +414,389 @@ class PermutationWatermark:
                 )
             group_perms.append(group_perm)
         return kv_base_perm, group_perms
+
+
+class FunctionInvariantTransformationWatermark(TransformerWatermark):
+    """
+    Function invariant transformation watermark for transformer models.
+    :param config: configuration of the model to watermark
+    :param mode: settings of the FIT watermark, four modes, including permutation,
+    scaling, qk-products, and all
+    """
+
+    def __init__(self, config: PretrainedConfig, mode: str):
+        assert mode in ("permutation", "scaling", "qk-products", "all")
+        self.mode = mode
+        self.layer_num = config.num_hidden_layers
+        self.num_attention_heads = config.num_attention_heads
+        self.num_kv_heads = getattr(
+            config, "num_key_value_heads", self.num_attention_heads
+        )
+        self.group_size = self.num_attention_heads // self.num_kv_heads
+        if self.group_size > 1:
+            raise ValueError("Do not support grouped-query attention!")
+        if hasattr(config, "head_dim"):
+            self.head_dim = config.head_dim
+        else:
+            self.head_dim = config.hidden_size // self.num_attention_heads
+        self.hidden_size = config.hidden_size
+        self.intermediate_size = config.intermediate_size
+
+        self.slot_choice_num = 2**8
+        self.candidates: dict[str, list[list[torch.Tensor]]] = {
+            "permutation": [],
+            "scaling": [],
+            "qk-products": [],
+        }
+
+        if self.mode == "permutation" or self.mode == "all":
+            self.candidates["permutation"].append(
+                self._construct_slot_candidates(perm_size=config.hidden_size)
+            )
+            for _ in range(self.layer_num):
+                self.candidates["permutation"].append(
+                    self._construct_slot_candidates(perm_size=self.num_kv_heads)
+                )
+                self.candidates["permutation"].append(
+                    self._construct_slot_candidates(perm_size=config.intermediate_size)
+                )
+        if self.mode == "scaling" or self.mode == "all":
+            for _ in range(2 * self.layer_num):
+                self.candidates["scaling"].append(
+                    self._construct_slot_candidates(scaling_size=config.hidden_size)
+                )
+        if self.mode == "qk-products" or self.mode == "all":
+            for _ in range(self.layer_num):
+                self.candidates["qk-products"].append(
+                    self._construct_slot_candidates(
+                        qk_prod_size=self.head_dim * self.num_kv_heads
+                    )
+                )
+        print(
+            f"Generated {len(self) * self.slot_choice_num} candidate transformations "
+            f"for watermarking ({self.mode} mode)"
+        )
+
+    def _construct_slot_candidates(
+        self,
+        perm_size: int | None = None,
+        scaling_size: int | None = None,
+        qk_prod_size: int | None = None,
+    ) -> list[torch.Tensor]:
+        def make_2d_rotary_matrix():
+            theta = torch.pi * torch.rand(qk_prod_size // 2)
+            cos = theta.cos()
+            sin = theta.sin()
+            rotation_blocks = torch.stack(
+                [torch.stack([cos, -sin], dim=-1), torch.stack([sin, cos], dim=-1)],
+                dim=-2,
+            )
+            return rotation_blocks
+
+        if perm_size is not None:
+            return [torch.randperm(perm_size) for _ in range(self.slot_choice_num)]
+        if scaling_size is not None:
+            return [
+                10 ** (torch.rand(scaling_size) * 2 - 1)
+                for _ in range(self.slot_choice_num)
+            ]
+        if qk_prod_size is not None:
+            return [make_2d_rotary_matrix() for _ in range(self.slot_choice_num)]
+
+        raise ValueError("Unknown mode")
+
+    def __len__(self) -> int:
+        return sum(map(len, self.candidates.values()))
+
+    def __repr__(self) -> str:
+        attn_size = f"{self.num_kv_heads}x{self.group_size}"
+        res = (
+            f"{self.__class__.__name__}(n={len(self)}, emb={self.hidden_size}, "
+            f"attn={attn_size}, ff={self.intermediate_size})"
+        )
+        return res
+
+    def to_dict(self) -> dict:
+        """
+        Convert the watermark config to a dictionary.
+        :return: configuration dictionary
+        """
+        params = {
+            "config": {
+                "num_hidden_layers": self.layer_num,
+                "num_attention_heads": self.num_attention_heads,
+                "num_kv_heads": self.num_kv_heads,
+                "hidden_size": self.head_dim * self.num_attention_heads,
+                "intermediate_size": self.intermediate_size,
+            },
+            "slot_choice_num": self.slot_choice_num,
+            "mode": self.mode,
+            "candidates": {
+                "permutation": [],
+                "scaling": [],
+                "qk-products": [],
+            },
+        }
+        for cand_type, cand_values in self.candidates.items():
+            params["candidates"][cand_type] = [
+                [cand.tolist() for cand in values] for values in cand_values
+            ]
+        return params
+
+    @classmethod
+    def from_dict(cls, params: dict) -> FunctionInvariantTransformationWatermark:
+        """
+        Construct a FIT instance from a configuration dictionary.
+        :param params: parameters of the watermark configuration
+        :return: a FunctionInvariantTransformationWatermark instance
+        """
+        config = PretrainedConfig(**params["config"])
+        res = cls(
+            config,
+            params["mode"],
+        )
+        for cand_type, cand_values in params["candidates"].items():
+            res.candidates[cand_type] = [
+                [torch.tensor(cand) for cand in values] for values in cand_values
+            ]
+        return res
+
+    def generate_random_identity(self) -> list[int]:
+        """
+        Generate a random model identifier.
+        :return: a list of integers representing the watermark
+        """
+        identity = []
+        if self.mode in ("permutation", "all"):
+            identity.extend(
+                [
+                    random.randint(0, self.slot_choice_num - 1)
+                    for _ in range(2 * self.layer_num + 1)
+                ]
+            )
+        if self.mode in ("scaling", "all"):
+            identity.extend(
+                [
+                    random.randint(0, self.slot_choice_num - 1)
+                    for _ in range(2 * self.layer_num)
+                ]
+            )
+        if self.mode in ("qk-products", "all"):
+            identity.extend(
+                [
+                    random.randint(0, self.slot_choice_num - 1)
+                    for _ in range(self.layer_num)
+                ]
+            )
+        return identity
+
+    def insert_watermark(
+        self,
+        model: PreTrainedModel,
+        identity: list[int],
+        **kwargs,
+    ) -> Any:
+        """
+        Embed the model identifier into the given model.
+        :param model: transformer model to insert watermark into
+        :param identity: identity message to embed
+        :param kwargs: other arguments
+        :return: None
+        """
+        id_copy = identity[::-1]
+
+        print("Applying dimension permutations")
+        if self.mode in ("permutation", "all"):
+            with torch.no_grad():
+                digit = id_copy.pop()
+                perm = self.candidates["permutation"][0][digit]
+                permutation_inv.permute_embeddings(model, perm)
+                for i in range(self.layer_num):
+                    digit = id_copy.pop()
+                    perm = self.candidates["permutation"][2 * i + 1][digit]
+                    block_perm = utils.block_perm_gen(self.head_dim, perm)
+                    permutation_inv.permute_attention_heads(
+                        model, block_perm, block_perm, i
+                    )
+                    digit = id_copy.pop()
+                    perm = self.candidates["permutation"][2 * i + 2][digit]
+                    permutation_inv.permute_feed_forward(model, perm, i)
+
+        print("Applying scaling/unscaling")
+        if self.mode in ("scaling", "all"):
+            for i in range(self.layer_num):
+                layer = model.model.layers[i]
+                dtype = layer.post_attention_layernorm.weight.data.dtype
+                with torch.no_grad():
+                    digit = id_copy.pop()
+                    alpha = self.candidates["scaling"][2 * i][digit].to(dtype)
+                    layer.input_layernorm.weight.data = (
+                        alpha * layer.input_layernorm.weight.data
+                    )
+                    layer.self_attn.q_proj.weight.data = (
+                        1.0 / alpha * layer.self_attn.q_proj.weight.data
+                    )
+                    layer.self_attn.k_proj.weight.data = (
+                        1.0 / alpha * layer.self_attn.k_proj.weight.data
+                    )
+                    layer.self_attn.v_proj.weight.data = (
+                        1.0 / alpha * layer.self_attn.v_proj.weight.data
+                    )
+                    digit = id_copy.pop()
+                    alpha = self.candidates["scaling"][2 * i + 1][digit].to(dtype)
+                    layer.post_attention_layernorm.weight.data = (
+                        alpha * layer.post_attention_layernorm.weight.data
+                    )
+                    layer.mlp.up_proj.weight.data = (
+                        1.0 / alpha * layer.mlp.up_proj.weight.data
+                    )
+                    layer.mlp.gate_proj.weight.data = (
+                        1.0 / alpha * layer.mlp.gate_proj.weight.data
+                    )
+
+        print("Applying invertible matrices in QK products")
+        if self.mode in ("qk-products", "all"):
+            with torch.no_grad():
+                for i in range(self.layer_num):
+                    attn = model.model.layers[i].self_attn
+                    digit = identity[-(self.layer_num - i)]
+                    mat = self.candidates["qk-products"][i][digit]
+                    dtype = attn.q_proj.weight.data.dtype
+                    mat_q = torch.block_diag(*mat)
+                    mat_k = torch.block_diag(*mat.transpose(1, 2))
+                    attn.q_proj.weight.data = (
+                        mat_q.to(dtype).cuda() @ attn.q_proj.weight.data.cuda()
+                    ).cpu()
+                    attn.k_proj.weight.data = (
+                        mat_k.to(dtype).cuda() @ attn.k_proj.weight.data.cuda()
+                    ).cpu()
+
+    def extract_watermark(
+        self, source: PreTrainedModel, model: PreTrainedModel, **kwargs
+    ) -> list[int]:
+        """
+        Extract the watermark from the given model and the source model.
+        :param source: transformer model without the watermark
+        :param model: transformer model with inserted watermark
+        :param kwargs: other arguments
+        :return: the extracted watermark, a list of integers
+        """
+        extracted_identity = []
+
+        if self.mode in ("permutation", "all"):
+            with torch.no_grad():
+                weight = source.model.embed_tokens.weight.data
+                weight_ = model.model.embed_tokens.weight.data
+                dists = [
+                    torch.norm(weight_ - weight[:, perm])
+                    for perm in self.candidates["permutation"][0]
+                ]
+                digit = torch.tensor(dists).argmin().item()
+                extracted_identity.append(digit)
+                perm_inv = utils.get_perm_inv(
+                    self.candidates["permutation"][0][digit].tolist()
+                )
+                permutation_inv.permute_embeddings(model, perm_inv)
+
+                for i in tqdm.tqdm(
+                    range(self.layer_num), desc="Extracting permutation"
+                ):
+                    weight = source.model.layers[i].self_attn.o_proj.weight.data
+                    weight_ = model.model.layers[i].self_attn.o_proj.weight.data
+                    dists = [
+                        torch.norm(
+                            weight_
+                            - weight[:, utils.block_perm_gen(self.head_dim, perm)]
+                        )
+                        for perm in self.candidates["permutation"][2 * i + 1]
+                    ]
+                    digit = torch.tensor(dists).argmin().item()
+                    extracted_identity.append(digit)
+                    # apply the inverse permutation
+                    inv_perm = utils.get_perm_inv(
+                        self.candidates["permutation"][2 * i + 1][digit].tolist()
+                    )
+                    block_inv_perm = utils.block_perm_gen(self.head_dim, inv_perm)
+                    permutation_inv.permute_attention_heads(
+                        model, block_inv_perm, block_inv_perm, i
+                    )
+
+                    weight = source.model.layers[i].mlp.gate_proj.weight.data
+                    weight_ = model.model.layers[i].mlp.gate_proj.weight.data
+                    dists = [
+                        torch.norm(weight_ - weight[perm, :])
+                        for perm in self.candidates["permutation"][2 * i + 2]
+                    ]
+                    digit = torch.tensor(dists).argmin().item()
+                    extracted_identity.append(digit)
+                    # apply the inverse permutation
+                    inv_perm = utils.get_perm_inv(
+                        self.candidates["permutation"][2 * i + 2][digit].tolist()
+                    )
+                    permutation_inv.permute_feed_forward(model, inv_perm, i)
+
+        if self.mode in ("scaling", "all"):
+            with torch.no_grad():
+                for i in range(self.layer_num):
+                    layer = model.model.layers[i]
+                    dtype = layer.post_attention_layernorm.weight.data.dtype
+                    weight = layer.self_attn.v_proj.weight.data.cuda()
+                    weight_ = layer.self_attn.v_proj.weight.data.cuda()
+                    dists = [
+                        torch.norm(weight_ - 1.0 / alpha.cuda() * weight)
+                        for alpha in self.candidates["scaling"][2 * i]
+                    ]
+                    digit = torch.tensor(dists).argmin().item()
+                    extracted_identity.append(digit)
+                    # multiply the scaling factor
+                    alpha = self.candidates["scaling"][2 * i][digit].to(dtype)
+                    layer.input_layernorm.weight.data = (
+                        1.0 / alpha * layer.input_layernorm.weight.data
+                    )
+                    layer.self_attn.q_proj.weight.data = (
+                        alpha * layer.self_attn.q_proj.weight.data
+                    )
+                    layer.self_attn.k_proj.weight.data = (
+                        alpha * layer.self_attn.k_proj.weight.data
+                    )
+                    layer.self_attn.v_proj.weight.data = (
+                        alpha * layer.self_attn.v_proj.weight.data
+                    )
+
+                    weight = layer.mlp.up_proj.weight.data.cuda()
+                    weight_ = layer.mlp.up_proj.weight.data.cuda()
+                    dists = [
+                        torch.norm(weight_ - 1.0 / alpha.cuda() * weight)
+                        for alpha in self.candidates["scaling"][2 * i + 1]
+                    ]
+                    digit = torch.tensor(dists).argmin().item()
+                    extracted_identity.append(digit)
+                    # multiply the scaling factor
+                    alpha = self.candidates["scaling"][2 * i + 1][digit].to(dtype)
+                    layer.post_attention_layernorm.weight.data = (
+                        1.0 / alpha * layer.post_attention_layernorm.weight.data
+                    )
+                    layer.mlp.up_proj.weight.data = (
+                        alpha * layer.mlp.up_proj.weight.data
+                    )
+                    layer.mlp.gate_proj.weight.data = (
+                        alpha * layer.mlp.gate_proj.weight.data
+                    )
+                    torch.cuda.empty_cache()
+
+        if self.mode in ("qk-products", "all"):
+            with torch.no_grad():
+                for i in range(self.layer_num):
+                    weight = source.model.layers[i].self_attn.q_proj.weight.data.cuda()
+                    weight_ = model.model.layers[i].self_attn.q_proj.weight.data.cuda()
+                    dtype = weight.dtype
+                    dists = [
+                        torch.norm(
+                            weight_ - torch.block_diag(*mat.to(dtype).cuda()) @ weight
+                        )
+                        for mat in self.candidates["qk-products"][i]
+                    ]
+                    extracted_identity.append(torch.tensor(dists).argmin().item())
+                    torch.cuda.empty_cache()
+
+        return extracted_identity
