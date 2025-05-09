@@ -112,6 +112,8 @@ def evaluate_efficiency(
 
         insert_time_list.append(insert_end_time - insert_start_time)
         extract_time_list.append(extract_end_time - insert_end_time)
+        source = source.cpu()
+        model = deepcopy(source)
 
     avg_insert_time = sum(insert_time_list) / len(insert_time_list)
     avg_extract_time = sum(extract_time_list) / len(extract_time_list)

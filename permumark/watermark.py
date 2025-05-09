@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import math
 import random
+import time
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, NamedTuple
@@ -12,6 +13,7 @@ import torch
 import tqdm
 from sympy.functions.combinatorial.factorials import subfactorial
 from transformers import PretrainedConfig, PreTrainedModel
+from transformers.models.llama.modeling_llama import apply_rotary_pos_emb, rotate_half
 
 from . import ecc, permutation_inv, permutation_mapping, utils
 
@@ -248,7 +250,7 @@ class PermutationWatermark(TransformerWatermark):
         source: PreTrainedModel,
         model: PreTrainedModel,
         verbose: bool = False,
-        max_workers: int = 12,
+        max_workers: int = 8,
     ) -> PermutationWatermarkExtractionResult:
         """
         Extract watermark and decode to identity message from models.
@@ -469,7 +471,7 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
             for _ in range(self.layer_num):
                 self.candidates["qk-products"].append(
                     self._construct_slot_candidates(
-                        qk_prod_size=self.head_dim * self.num_kv_heads
+                        qk_prod_size=(self.head_dim, self.num_kv_heads)
                     )
                 )
         print(
@@ -481,17 +483,11 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
         self,
         perm_size: int | None = None,
         scaling_size: int | None = None,
-        qk_prod_size: int | None = None,
+        qk_prod_size: tuple[int, int] | None = None,
     ) -> list[torch.Tensor]:
-        def make_2d_rotary_matrix():
-            theta = torch.pi * torch.rand(qk_prod_size // 2)
-            cos = theta.cos()
-            sin = theta.sin()
-            rotation_blocks = torch.stack(
-                [torch.stack([cos, -sin], dim=-1), torch.stack([sin, cos], dim=-1)],
-                dim=-2,
-            )
-            return rotation_blocks
+        def make_2d_rotary_degrees(head_dim, num_kv_heads):
+            theta = 2 * torch.pi * torch.rand(head_dim // 2)
+            return theta.repeat(2).repeat(num_kv_heads, 1)
 
         if perm_size is not None:
             return [torch.randperm(perm_size) for _ in range(self.slot_choice_num)]
@@ -501,7 +497,10 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
                 for _ in range(self.slot_choice_num)
             ]
         if qk_prod_size is not None:
-            return [make_2d_rotary_matrix() for _ in range(self.slot_choice_num)]
+            return [
+                make_2d_rotary_degrees(*qk_prod_size)
+                for _ in range(self.slot_choice_num)
+            ]
 
         raise ValueError("Unknown mode")
 
@@ -660,20 +659,22 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
                 for i in range(self.layer_num):
                     attn = model.model.layers[i].self_attn
                     digit = identity[-(self.layer_num - i)]
-                    mat = self.candidates["qk-products"][i][digit]
                     dtype = attn.q_proj.weight.data.dtype
-                    mat_q = torch.block_diag(*mat)
-                    mat_k = torch.block_diag(*mat.transpose(1, 2))
-                    attn.q_proj.weight.data = (
-                        mat_q.to(dtype).cuda() @ attn.q_proj.weight.data.cuda()
-                    ).cpu()
-                    attn.k_proj.weight.data = (
-                        mat_k.to(dtype).cuda() @ attn.k_proj.weight.data.cuda()
-                    ).cpu()
+                    theta = self.candidates["qk-products"][i][digit]
+                    wq, wk = apply_qk_products(
+                        theta,
+                        attn.q_proj.weight.data,
+                        attn.q_proj.weight.data,
+                        self.head_dim,
+                        self.num_kv_heads,
+                        dtype,
+                    )
+                    attn.q_proj.weight.data = wq.cpu()
+                    attn.k_proj.weight.data = wk.cpu()
 
     def extract_watermark(
         self, source: PreTrainedModel, model: PreTrainedModel, **kwargs
-    ) -> list[int]:
+    ) -> tuple[list[int], tuple[float, float, float]]:
         """
         Extract the watermark from the given model and the source model.
         :param source: transformer model without the watermark
@@ -683,6 +684,7 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
         """
         extracted_identity = []
 
+        perm_extract_start = time.time()
         if self.mode in ("permutation", "all"):
             with torch.no_grad():
                 weight = source.model.embed_tokens.weight.data
@@ -735,13 +737,14 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
                     )
                     permutation_inv.permute_feed_forward(model, inv_perm, i)
 
+        scaling_extract_start = time.time()
         if self.mode in ("scaling", "all"):
             with torch.no_grad():
                 for i in range(self.layer_num):
                     layer = model.model.layers[i]
-                    dtype = layer.post_attention_layernorm.weight.data.dtype
-                    weight = layer.self_attn.v_proj.weight.data.cuda()
-                    weight_ = layer.self_attn.v_proj.weight.data.cuda()
+                    dtype = model.model.layers[i].self_attn.q_proj.weight.data.dtype
+                    weight = source.model.layers[i].self_attn.v_proj.weight.data.cuda()
+                    weight_ = model.model.layers[i].self_attn.v_proj.weight.data.cuda()
                     dists = [
                         torch.norm(weight_ - 1.0 / alpha.cuda() * weight)
                         for alpha in self.candidates["scaling"][2 * i]
@@ -763,8 +766,8 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
                         alpha * layer.self_attn.v_proj.weight.data
                     )
 
-                    weight = layer.mlp.up_proj.weight.data.cuda()
-                    weight_ = layer.mlp.up_proj.weight.data.cuda()
+                    weight = source.model.layers[i].mlp.up_proj.weight.data.cuda()
+                    weight_ = model.model.layers[i].mlp.up_proj.weight.data.cuda()
                     dists = [
                         torch.norm(weight_ - 1.0 / alpha.cuda() * weight)
                         for alpha in self.candidates["scaling"][2 * i + 1]
@@ -784,6 +787,7 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
                     )
                     torch.cuda.empty_cache()
 
+        qk_products_extract_start = time.time()
         if self.mode in ("qk-products", "all"):
             with torch.no_grad():
                 for i in range(self.layer_num):
@@ -792,11 +796,55 @@ class FunctionInvariantTransformationWatermark(TransformerWatermark):
                     dtype = weight.dtype
                     dists = [
                         torch.norm(
-                            weight_ - torch.block_diag(*mat.to(dtype).cuda()) @ weight
+                            weight_
+                            - apply_half_qk_products(
+                                theta, weight, self.head_dim, self.num_kv_heads, dtype
+                            )
                         )
-                        for mat in self.candidates["qk-products"][i]
+                        for theta in self.candidates["qk-products"][i]
                     ]
                     extracted_identity.append(torch.tensor(dists).argmin().item())
                     torch.cuda.empty_cache()
 
-        return extracted_identity
+        extract_end = time.time()
+        perm_time = scaling_extract_start - perm_extract_start
+        scaling_time = qk_products_extract_start - scaling_extract_start
+        qk_products_time = extract_end - qk_products_extract_start
+
+        return extracted_identity, (perm_time, scaling_time, qk_products_time)
+
+
+def apply_qk_products(
+    theta: torch.Tensor,
+    wq: torch.Tensor,
+    wk: torch.Tensor,
+    head_dim: int,
+    num_kv_heads: int,
+    dtype: torch.dtype,
+):
+    theta = theta.cuda().to(dtype)
+    wq, wk = apply_rotary_pos_emb(
+        wq.cuda().view(num_kv_heads, head_dim, -1).transpose(1, 2),
+        wk.cuda().view(num_kv_heads, head_dim, -1).transpose(1, 2),
+        theta.cos(),
+        theta.sin(),
+    )
+    wq = wq.transpose(1, 2).reshape(head_dim * num_kv_heads, -1)
+    wk = wk.transpose(1, 2).reshape(head_dim * num_kv_heads, -1)
+    return wq, wk
+
+
+def apply_half_qk_products(
+    theta: torch.Tensor,
+    w: torch.Tensor,
+    head_dim: int,
+    num_kv_heads: int,
+    dtype: torch.dtype,
+):
+    theta = theta.cuda().to(dtype)
+    cos = theta.cos().unsqueeze(1)
+    sin = theta.sin().unsqueeze(1)
+    w = w.cuda().view(num_kv_heads, head_dim, -1).transpose(1, 2)
+    w = (w * cos) + (rotate_half(w) * sin)
+    w = w.transpose(1, 2).reshape(head_dim * num_kv_heads, -1)
+    return w

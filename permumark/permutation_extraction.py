@@ -199,5 +199,6 @@ def batch_cdist(
             mat2_batch = mat2[j : j + size2]
             dist_batch = torch.cdist(mat1_batch, mat2_batch, p=p)
             result[i : i + size1, j : j + size2] = dist_batch
+            torch.cuda.empty_cache()
 
     return result
