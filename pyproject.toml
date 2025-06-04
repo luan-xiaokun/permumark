@@ -8,25 +8,20 @@ version = "0.1.0"
 description = "Error Correction Enhanced Permutation Watermark for Transformers"
 authors = [{ name = "Xiaokun Luan", email = "luanxiaokun@pku.edu.cn" }]
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "License :: OSI Approved :: MIT License",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
-    "Programming Language :: Python :: 3.12"
 ]
 dependencies = [
     "datasets==3.2.0",
     "peft==0.14.0",
-    "scipy==1.14.1",
-    "sympy==1.13.3",
     "tokenizers==0.21.0",
     "torch==2.2.1",
-    "tqdm==4.67.1",
-    "transformers==4.47.0"
+    "transformers==4.47.0",
 ]
 
 [tool.isort]

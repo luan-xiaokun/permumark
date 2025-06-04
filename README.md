@@ -1,37 +1,77 @@
-# PermuMark
+# Artifact for PoPETs 2025 Paper: Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes
 
+This artifact includes the source code, evaluation scripts, and fine-tuned weight for the paper *Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes* accepted at PoPETs 2025.
+
+We describe the artifact in detail below, including how to install and use the library, how to set up the environment for evaluation, and how to reproduce the evaluation results presented in the paper.
+
+## Source Code: PermuMark
+
+The watermarking scheme proposed in the paper is implemented in the `permumark` Python package, called *PermuMark* and located in the `permumark` directory.
 PermuMark is an error correction enhanced permutation watermark for transformer models.
 As a white-box training-free watermarking method, the insertion and extraction of watermarks is efficient and does not require GPU (of course it is good to have one to accelerate the extraction process).
 Moreover, PermuMark is robust under various model modification techniques, including fine-tuning, quantization, and pruning.
 The watermark can be preserved and successfully extracted even under adaptive attacks, as long as the attacks are within the error correction capability of PermuMark.
 Last but not least, PermuMark has minimal impact on model performance.
 
-## Requirements & Build
+Below, we provide a detailed description of the requirements and how to build the package.
 
-### TL;DR
+### Requirements
 
-1. install libgmp using `sudo apt-get install libgmp-dev`
-2. prepare a Python3.11 environment `conda create -n permumark python=3.11 && conda activate permumark`
-3. install SageMath `conda install sage=10.4`
-4. build shared library `./build.sh`
-5. install the package `pip install -e .`
-6. (Optional) install AutoGPTQ for evaluating robustness under quantization
+We need the following tools and libraries to build and use PermuMark:
 
-### Non-Python Library
+- `conda` for creating a Python environment and installing SageMath
+- `gcc` and `libgmp-dev` for building the shared library
 
-- gcc (or any other C compiler)
-- [GMP](https://gmplib.org/) (e.g., through `sudo apt-get install libgmp-dev`)
-- [SageMath](https://www.sagemath.org/) 10.4 (e.g., through `conda install sage=10.4`)
+To install the required libraries, you can run the following commands:
 
-The ranking and unranking of derangement are implemented in C and exposed to Python through a shared library (DLL should
-also work).
-To build the shared library, simply run `./build.sh` under the project directory, it will produce a shared library under
-`permumark/derangement`.
+```bash
+# we recommend using Miniforge
+curl -L -O "https://github.com/conda-forge/miniforge/releases/latest/download/Miniforge3-$(uname)-$(uname -m).sh"
+bash Miniforge3-$(uname)-$(uname -m).sh
+# make sure gcc and gmp are installed
+sudo apt install build-essential
+sudo apt install libgmp-dev
+```
 
-### Python Packages
+### Installation
 
-PermuMark is developed on Python3.11, and it should also work for Python>=3.10.
-The following dependencies can be installed via `pip install -e .`
+First create a new environment for PermuMark using `conda`:
+
+```bash
+# you may need to first run `conda init` to set up your shell
+conda create -n permumark python=3.11
+conda activate permumark
+# you can verify the path of the Python interpreter
+which python
+```
+
+Then install [SageMath](https://www.sagemath.org/) through `conda` and build the shared library for derangement (commands below assume you are in the project root directory):
+
+```bash
+conda install sage=10.4
+./scripts/build.sh
+# a shared library should be built in permumark/derangement
+```
+
+To verify that SageMath is installed correctly, you can run `sage` in the terminal, and it should output something like this without warnings or errors:
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│ SageMath version 10.4, Release Date: 2024-07-19                    │
+│ Using Python 3.11.12. Type "help()" for help.                      │
+└────────────────────────────────────────────────────────────────────┘
+sage: 
+```
+
+**NOTE**: You may need to pass `-c conda-forge` to `conda install` if you are not using Miniforge, which uses conda-forge as the default channel.
+
+Finally, install the dependencies and the package using `pip`:
+
+```bash
+pip install -e .
+```
+
+The main dependencies include:
 
 - datasets==3.2.0
 - torch==2.2.1
@@ -39,18 +79,9 @@ The following dependencies can be installed via `pip install -e .`
 - sympy==1.13.3
 - transformers==4.47.0
 
-#### AutoGPTQ for Quantization
+### Usage
 
-To evaluate the robustness of PermuMark under GPTQ quantization, [`auto_gptq`](https://github.com/AutoGPTQ/AutoGPTQ) is
-required.
-We recommend [install from source](https://github.com/AutoGPTQ/AutoGPTQ?tab=readme-ov-file#install-from-source) to set
-up the environment.
-PermuMark was evaluated under PyTorch 2.2.1+cu118 version.
-
-## Usage
-
-### Watermark Insertion
-
+**Watermark Insertion**:
 To insert permutation watermarks, first create a `PermutationWatermark` instance by passing the model config.
 Then the watermark can be generated and inserted to the model within two lines.
 
@@ -67,8 +98,7 @@ identity = pw.generate_random_identity()
 insertion_result = pw.insert_watermark(model, identity)
 ```
 
-### Watermark Extraction
-
+**Watermark Extraction**:
 Suppose the original model without watermark is `source`, and the watermarked model is `model`,
 the identity (and also watermark) can be extracted using `extract_watermark` as follows.
 
@@ -81,8 +111,7 @@ print("Extracted watermark:", extract_res.watermark)
 The extracted identity and watermark can be accessed through the extraction result `extract_res`.
 Similarly, inserted identity and watermark can be accessed through the insertion result `insert_res`.
 
-### Watermark Configuration
-
+**Watermark Configuration**:
 `PermutationWatermark` accepts two arguments: `max_corrupt_prob` and `total_id_num`.
 
 - `max_corrupt_prob`: Maximum probability of undetectable adversary corruption that the model owner can tolerate.
@@ -91,8 +120,52 @@ Similarly, inserted identity and watermark can be accessed through the insertion
 - `total_id_num`: The number of different model identifiers that the model owner wants to manage.
   Defaults to 10,000,000, meaning that the model owner can distribute at most 10M models with different identifiers.
 
-## Evaluation
+## Evaluation Scripts and Results
 
+We provide evaluation scripts to assess the utility, robustness, and efficiency of the proposed watermarking scheme.
+The evaluation entrance and utilities are located in the `evaluation` directory.
+Scripts for setting up the evaluation environment (e.g., downloading models and datasets) and reproducing the results presented in the paper are placed under the `scripts` directory.
+
+Below, we describe how to set up the evaluation environment and run the evaluation scripts.
+Part of the evaluation code is adapted from [Wanda](https://github.com/locuslab/wanda) and [SparseGPT](https://github.com/IST-DASLab/sparsegpt).
+
+
+### Evaluation Environment Setup
+
+**Hardware Requirements**:
+At least 128GB of RAM and an GPU with at least 24GB of VRAM for evaluating large models.
+Downloading the models and datasets requires at least 250GB of disk space.
+
+**Download Models and Datasets**
+We provide a script `scripts/download.sh` for downloading the models and datasets used in the evaluation.
+To use the script, first install `huggingface_hub[cli]` and then login to Huggingface using your account token (for downloading Llama models):
+
+```bash
+pip install huggingface_hub[cli]
+huggingface-cli login
+# enter your Huggingface account token when prompted
+./scripts/download.sh
+```
+
+**Dependency Installation**:
+To evaluate the robustness of the proposed watermarking scheme against GPTQ quantization, [`auto_gptq`](https://github.com/AutoGPTQ/AutoGPTQ) is
+required.
+We recommend [install from source](https://github.com/AutoGPTQ/AutoGPTQ?tab=readme-ov-file#install-from-source) to set
+up the environment:
+
+```bash
+git clone https://github.com/PanQiWei/AutoGPTQ.git && cd AutoGPTQ
+pip install numpy gekko pandas
+pip install -vvv --no-build-isolation -e .
+```
+
+This requires `nvcc` to be installed, which is usually included in the CUDA toolkit.
+An alternative installation method is to set `BUILD_CUDA_EXT=0` to fall back to a pure Python implementation, but this will be much slower.
+PermuMark was evaluated under PyTorch 2.2.1+cu118 version without using the CUDA extension (in which case warnings about CUDA extension are expected).
+
+### Reproducing Evaluation Results
+
+**Usage**:
 The main evaluation entrance is placed at `evaluation/evaluation.py`.
 
 ```
@@ -119,4 +192,14 @@ python evaluation/evaluation.py utility gemma --size 7b --batch_size 4
 python evaluation/evaluation.py security llama --size 8b --perm_budget 60 --perm_type random
 ```
 
-Evaluation results presented in the report can be reproduced by running scripts placed under `scripts` folder.
+For detailed usage, refer to the description in `ARTIFACT-EVALUATION.md`.
+
+**Plotting Figure**:
+Run `python evaluation/plots/probability.py` to plot the estimated probability of undetectable corruption for configurations.
+
+**Evaluation Results**:
+We provide the log files of the evaluation results in the `evaluation/logs` directory.
+
+## License
+
+This artifact is released under the MIT License.

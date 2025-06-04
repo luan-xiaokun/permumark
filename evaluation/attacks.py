@@ -5,7 +5,7 @@ from __future__ import annotations
 import random
 
 import torch
-from sympy.functions.combinatorial.factorials import subfactorial, factorial
+from sympy.functions.combinatorial.factorials import subfactorial
 from transformers import PreTrainedModel
 
 from permumark import PermutationWatermark, permutation_inv, utils
