@@ -74,9 +74,8 @@ pip install -e .
 The main dependencies include:
 
 - datasets==3.2.0
+- peft==0.14.0
 - torch==2.2.1
-- scipy==1.14.1
-- sympy==1.13.3
 - transformers==4.47.0
 
 ### Usage
