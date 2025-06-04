@@ -1,5 +1,3 @@
-from transformers import PreTrainedModel
-
 # PermuMark
 
 PermuMark is an error correction enhanced permutation watermark for transformer models.

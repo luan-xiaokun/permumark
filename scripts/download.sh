@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 
 # use the following mirror if you have network issue (e.g., in China)
-export HF_ENDPOINT="https://hf-mirror.com"
+# export HF_ENDPOINT="https://hf-mirror.com"
 
 # uncomment the following line if you haven't logged in
 # huggingface-cli login
