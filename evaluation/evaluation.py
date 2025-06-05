@@ -16,7 +16,6 @@ import attacks
 import eval_utils
 from evasion_finetune import evaluate_finetune_robustness
 from evasion_pruning import evaluate_pruning_robustness
-from evasion_quantization import evaluate_quantization_robustness
 from permumark import PermutationWatermark
 
 os.environ["TOKENIZERS_PARALLELISM"] = "false"
@@ -184,6 +183,8 @@ def evaluate_robustness(
             verbose=verbose,
         )
     elif modification == "quantization":
+        from evasion_quantization import evaluate_quantization_robustness
+
         dataset = load_dataset(**DATASET).select(range(QUANTIZATION_DATASET_SIZE))
         evaluate_quantization_robustness(
             model_path, model, pw, quant_bits, dataset, verbose

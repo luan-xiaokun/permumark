@@ -1,6 +1,6 @@
 # Artifact for PoPETs 2025 Paper: Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes
 
-This artifact includes the source code, evaluation scripts, and fine-tuned weight for the paper *Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes* accepted at PoPETs 2025.
+This artifact includes the source code, evaluation scripts, fine-tuned weights, and raw evaluation results for the paper *Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes* accepted at PoPETs 2025.
 
 We describe the artifact in detail below, including how to install and use the library, how to set up the environment for evaluation, and how to reproduce the evaluation results presented in the paper.
 
@@ -22,6 +22,7 @@ We need the following tools and libraries to build and use PermuMark:
 - `conda` for creating a Python environment and installing SageMath
 - `gcc` and `libgmp-dev` for building the shared library
 
+For reference, the artifact was developed and tested on Ubuntu 22.04 with amd64 architecture.
 To install the required libraries, you can run the following commands:
 
 ```bash
@@ -75,6 +76,7 @@ The main dependencies include:
 
 - datasets==3.2.0
 - peft==0.14.0
+- tokenizers==0.21.1
 - torch==2.2.1
 - transformers==4.47.0
 

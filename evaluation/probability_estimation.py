@@ -1,5 +1,7 @@
+import argparse
 import math
 import random
+
 # from concurrent.futures import ProcessPoolExecutor, as_completed
 from copy import deepcopy
 from itertools import repeat
@@ -292,20 +294,58 @@ def estimate_forgery_prob(
     return total_forgery_success, total_undetected_corruption_num
 
 
+def get_args():
+    parser = argparse.ArgumentParser(
+        description="Estimate the probability of forgery and undetected corruption"
+    )
+    parser.add_argument(
+        "task", type=str, choices=["corruption", "forgery"], help="Task type"
+    )
+    parser.add_argument("--num", type=int, default=10**3, help="Number of simulations")
+    parser.add_argument("--gf_size", type=int, default=2**24, help="Galois field size")
+    parser.add_argument("--k", type=int, default=1, help="Number of identity digits")
+    parser.add_argument("--n", type=int, default=33, help="Reed-Solomon code length")
+    parser.add_argument("--hidden_size", type=int, default=2048, help="Hidden size")
+    parser.add_argument(
+        "--num_kv_heads", type=int, default=8, help="Number of KV heads"
+    )
+    parser.add_argument("--group_size", type=int, default=4, help="Group size")
+    parser.add_argument(
+        "--intermediate_size", type=int, default=8192, help="Intermediate size"
+    )
+    parser.add_argument(
+        "--perm_type", type=str, default="shift", help="Type of permutation"
+    )
+    return parser.parse_args()
+
+
 def main():
-    num = 10**8
-
-    # estimate_prob(num, 2 ** 24, 16, 1)
-
-    # estimate_prob(num, 2 ** 24, 32, 1)
-
-    estimate_prob(num, 2**24, 8, 4)
-
-    estimate_prob(num, 2**8, 8, 3)
+    args = get_args()
+    if args.task == "corruption":
+        estimate_prob(
+            args.num,
+            args.gf_size,
+            args.num_kv_heads,
+            args.group_size,
+        )
+    elif args.task == "forgery":
+        forgery_success_num, undetected_corruption_num = estimate_forgery_prob(
+            args.num,
+            args.n,
+            args.gf_size,
+            args.k,
+            args.n,
+            args.hidden_size,
+            args.num_kv_heads,
+            args.group_size,
+            args.intermediate_size,
+            args.perm_type,
+        )
+        print(f"Forgery success: {forgery_success_num}")
+        print(f"Undetected corruption: {undetected_corruption_num}")
+    else:
+        raise ValueError(f"Unknown task: {args.task}")
 
 
 if __name__ == "__main__":
-    # print(get_ecc_params(16, 1, 10**9, 1e-5))
-    res = estimate_forgery_prob(3 * 10**3, 33, 2**24, 1, 33, 2048, 8, 4, 8192, "shift")
-    # res = estimate_forgery_prob(2*10**6, 57, 2**8, 3, 57, 3072, 8, 3, 8192, "shift")
-    print(res)
+    main()
