@@ -67,7 +67,14 @@ RUN huggingface-cli download --repo-type dataset Salesforce/wikitext --local-dir
 # Download Llama-3.2-1B from unsloth's Hugging Face repository, as it does not require an account token
 RUN huggingface-cli download --repo-type model unsloth/Llama-3.2-1B-Instruct --local-dir models/meta-llama/Llama-3.2-1B
 
-# Install AutoGPTQ from the specified fork
+# Download fine-tuned model weights from GitHub release
+RUN echo "Downloading fine-tuned model weights..." && \
+    wget https://github.com/luan-xiaokun/permumark/releases/download/PoPETs-Artifact/finetune-weights.tar.gz && \
+    tar -xzf finetune-weights.tar.gz -C models && \
+    rm finetune-weights.tar.gz && \
+    echo "Fine-tuned model weights downloaded and extracted."
+
+# Install AutoGPTQ
 RUN echo "Installing AutoGPTQ..." && \
     git clone https://github.com/PanQiWei/AutoGPTQ.git /opt/AutoGPTQ && \
     cd /opt/AutoGPTQ && \
@@ -75,21 +82,4 @@ RUN echo "Installing AutoGPTQ..." && \
     cd /app && \
     echo "AutoGPTQ installation complete."
 
-# --- Final Instructions and Default Command ---
-RUN echo "Build complete. Environment 'permumark' is ready." && \
-    echo "To use this image:" && \
-    echo "1. Run the container: docker run -it --rm your-image-name:tag bash" && \
-    echo "2. Inside the container, you may need to log in to Hugging Face:" && \
-    echo "   huggingface-cli login" && \
-    echo "3. Then, you can run your download and evaluation scripts, e.g.:" && \
-    echo "   ./scripts/download.sh" && \
-    echo "   python evaluation/evaluation.py ..."
-
-# Set a default command to start a bash shell when the container runs
 CMD ["bash"]
-
-# TODO
-# [x] Make sure conda environment is activated by default when the container starts
-# [x] Download the dataset (WikiText), this can be done without any account token
-# [x] Download a proximal Llama3.2-1B model for illustration purposes
-# [ ] Download and extract fine-tuned model weights

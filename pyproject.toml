@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "permumark"
 version = "0.1.0"
-description = "Error Correction Enhanced Permutation Watermark for Transformers"
+description = "Error Correction Enhanced Permutation Watermark for Large Language Models"
 authors = [{ name = "Xiaokun Luan", email = "luanxiaokun@pku.edu.cn" }]
 readme = "README.md"
 requires-python = ">=3.11"

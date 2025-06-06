@@ -255,7 +255,12 @@ def evaluate_security(
     :param simulate: use simulation for more efficient evaluation
     :return: None
     """
-    print(f"Attack setting: perm_budget={perm_budget}, perm_type={perm_type}")
+    atk_msg = f"Attack setting: perm_budget={perm_budget}, perm_type={perm_type}"
+    if inv_attack:
+        atk_msg += ", inv_attack=True"
+    if scale_attack:
+        atk_msg += ", scale_attack=True"
+    print(atk_msg)
 
     if simulate:
         attack_success_count = 0

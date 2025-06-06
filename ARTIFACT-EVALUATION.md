@@ -8,22 +8,21 @@ Requested Badge: Functional
 
 ## Description
 This artifact contains the necessary components to reproduce the experimental results in the paper, *Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes*.
-It includes the source code for the proposed watermarking scheme, evaluation scripts, the fine-tuned model weights used in the robustness evaluation, and raw experimental result data.
+It includes the source code for the proposed watermarking scheme, evaluation scripts, and the fine-tuned model weights used for robustness evaluation.
 Detailed instructions are provided for setup and for running the scripts to reproduce the results presented in the paper.
 The artifact is publicly available on GitHub under the MIT license.
 
-### Security/Privacy Issues and Ethical Concerns (All badges)
+### Security/Privacy Issues and Ethical Concerns
 To the best of our knowledge, this artifact poses no security, privacy, or ethical risks.
 
 - **Security/Privacy**: We provide a self-contained Docker image to evaluate the artifact, requiring no root privileges or system modifications of the host system. The scripts simulating "attacks" are safe data-processing operations that pose no threat to the execution environment.
 - **Ethical Concerns**: Fine-tuned model weights were obtained using the WikiText-2 dataset, which contains no PII. A successful watermark removal attack's only consequence is the inability to extract the watermark, which causes no broader harm.
 
-## Basic Requirements (Only for Functional and Reproduced badges)
+## Basic Requirements
 
 ### Hardware Requirements
 Evaluating this artifact requires *a GPU with at least 8 GB of VRAM*.
 This is necessary for efficiently embedding and extracting watermarks from the large language models, as these operations are computationally intensive.
-If the reviewers do not have access to a suitable GPU, we recommend using cloud services like Google Colab or AWS EC2 with GPU instances.
 In addition, *at least 32 GB of RAM* is recommended to handle the large models and datasets involved in the evaluation.
 
 ### Software Requirements
@@ -43,20 +42,18 @@ Completely reproducing the results in the paper is expected to take more than 25
 This is because the evaluation involves eight different large language models, with size ranging from 1B to 13B parameters, and each model requires substantial time for evaluating the utility, robustness, and efficiency of the watermarking scheme.
 In addition, the corruption probability estimation for the watermark extraction process requires running more than a million simulations, which is computationally intensive.
 
-Therefore, we prepare simplified experiments that can be finished in *a few hours* and require *less than 25 GB of disk space* to achieve the "Functional" badge.
+Therefore, we prepare simplified experiments that can be finished in *about one hour* and require *less than 30 GB of disk space* to achieve the "Functional" badge.
 The simplified experiments only use the 1B large language model to evaluate the utility, robustness, and efficiency of the watermarking scheme.
-The simulations for corruption probability estimation are also reduced to a few thousand simulations, which should be sufficient to validate the security of the watermarking scheme.
+The number of simulations for estimating the corruption probability is also reduced, but it should be sufficient to validate the security of the watermarking scheme.
 
 ## Environment 
-In the following, describe how to access our artifact and all related and necessary data and software components.
-Afterward, describe how to set up everything and how to verify that everything is set up correctly.
 
-### Accessibility (All badges)
+### Accessibility
 The artifact is publicly available on the GitHub repository: https://github.com/luan-xiaokun/permumark.
-The commit-id for the version used in the evaluation is caece6954657258843d7e3fffd756d1c7e238755, available at [this link](https://github.com/luan-xiaokun/permumark/tree/caece6954657258843d7e3fffd756d1c7e238755).
+The version used for evaluation is tagged as `v1.0.0`.
 The associated fine-tuned model weights and the Docker image are also available in the repository.
 
-### Set up the environment (Only for Functional and Reproduced badges)
+### Set up the environment
 We list three ways to set up the environment for evaluating the artifact: using the provided Docker image, building the Docker image locally, or setting up the environment manually.
 
 #### Using the Provided Docker Image
@@ -72,11 +69,11 @@ To run the Docker container, you can use the following command:
 ```bash
 docker run --gpus all -it --rm --gpus all \
   ghcr.io/luan-xiaokun/permumark/permumark-eval:latest
-  # or just `permumark-eval:latest` if you have already pulled the image
+  # or just `permumark-eval:latest` if you build it locally
 ```
 
 #### Building the Docker Image Locally
-Alternatively, you can clone the artifact repository and build the Docker image locally with the following commands (takes about 20 minutes to build):
+Alternatively, you can clone the artifact repository and build the Docker image locally with the following commands (takes about 40 minutes to build):
 
 ```bash
 git clone git@github.com:luan-xiaokun/permumark.git
@@ -86,21 +83,21 @@ docker build -t permumark-eval:latest .
 
 #### Manually Setting Up the Environment
 As a last resort, you can also set up the environment manually if you do not have Docker installed.
-In this case, please follow the detailed instructions in the README file of the repository.
+In this case, please follow the detailed instructions in the README file.
 
-### Testing the Environment (Only for Functional and Reproduced badges)
+### Testing the Environment
 The artifact repository includes a simple test script to verify that the environment is set up correctly.
 You can run the following command to execute the test script:
 ```bash
 python envtest.py
-# expected output:
+# expected output (take about 1 minute):
 # Extracted identity matches: True
 ```
 
 This script imports the package `permumark` and inserts a watermark into the 1B Llama model.
 It then extracts the watermark and checks if the extracted identity matches the inserted one.
 
-## Artifact Evaluation (Only for Functional and Reproduced badges)
+## Artifact Evaluation
 
 ### Main Results and Claims
 The proposed watermarking method achieves high model utility, high probability of detecting permutation corruption, high robustness against various modifications and attacks, and high efficiency in watermarking insertion and extraction.
@@ -148,7 +145,7 @@ It also evaluates the percentage of distorted tokens of the watermarked model co
 # change the batch size according to your GPU memory capacity
 python evaluation/evaluation.py utility llama --size 1b --batch_size 4
 ```
-Please note that the evaluation result will be different from the one presented in the paper because we are using a different 1B model in the Docker image (the Llama-3.2-1B-Instruct model released by unsloth, instead of the original Llama-3.2-1B model released by meta-llama).
+Please note that the evaluation result will be different from the one presented in the paper because we are using a different 1B model in the Docker image (the Llama-3.2-1B-Instruct model released by unsloth, instead of the original Llama-3.2-1B model released by meta-llama, which is more difficult to include in a Docker image).
 
 #### Experiment 2: Probability of Detecting Permutation Corruption
 This experiment estimates the probability of failing to detect permutation corruption during watermark extraction under different attack settings.
@@ -157,7 +154,7 @@ The result presented in the paper is based on 100,000,000 (100 million) simulati
 For simplicity, we reduce the number of simulations to 1,000,000 (one million) and use a default configuration in this experiment.
 
 - Expected results: The estimated probability of failing to detect corruption should be less than 1e-4.
-- Estimated time: About 4 minutes.
+- Estimated time: About 10 minutes.
 - Supporting claim: This experiment supports Main Result 2, demonstrating that the watermarking scheme can effectively detect permutation corruption with high probability.
 - Execution command: as follows.
 
@@ -174,7 +171,7 @@ The paper evaluates six large language models against these modifications under 
 For simplicity, we only evaluate the 1B model in this artifact against six different settings, including the 4-bit quantization setting, the 0.5 sparsity Wanda pruning setting, and four different volumes of fine-tuning data.
 
 - Expected results: The watermark should remain intact and can be extracted after the modifications.
-- Estimated time: About 20 minutes.
+- Estimated time: About 15 minutes.
 - Supporting claim: This experiment supports Main Result 3, demonstrating that the watermarking scheme is robust against various model modifications.
 - Execution commands: as follows.
 
@@ -188,7 +185,7 @@ python evaluation/evaluation.py robustness llama --size 1b --modification finetu
 ```
 
 Please note that evaluating the robustness against fine-tuning directly loads the fine-tuned model weights located in the directory `models/finetune` instead of fine-tuning the watermarked model on the fly.
-If you are not using the provided Docker image, you need to download the fine-tuned model weights via this link (TODO) and extract them to the right place.
+If you are not using the provided Docker image, you need to download the fine-tuned model weights via this [link](https://github.com/luan-xiaokun/permumark/releases/download/PoPETs-Artifact/finetune-weights.tar.gz) and extract them to the right place.
 
 #### Experiment 4: Robustness Against Watermark Obfuscation
 This experiment evaluates the robustness of the watermarking scheme against watermark obfuscation attacks based on functional invariant transformations.
@@ -196,7 +193,7 @@ Specifically, we enable random weight permutations, vector scaling, and invertib
 
 
 - Expected results: The attack should fail and there should be no undetected corruption with a very high probability.
-- Estimated time: About 2 minutes.
+- Estimated time: About 1 minutes.
 - Supporting claim: This experiment supports Main Result 4, demonstrating that the watermarking scheme is robust against watermark obfuscation attacks based on functional invariant transformations.
 - Execution command: as follows.
 
@@ -245,7 +242,7 @@ python evaluation/evaluation.py efficiency llama --size 1b
 The actual evaluation result may differ from the one presented in the paper and the estimated one above due to different hardware.
 For simplicity, we only evaluate the time taken for inserting and extracting the proposed watermark on the 1B model, without evaluating the compared baseline method.
 
-## Limitations (Only for Functional and Reproduced badges)
+## Limitations
 All tables and results presented in the paper are reproducible with the provided artifact given enough computational resources.
 However, some results may vary due to different hardware (e.g., efficiency evaluation results) and randomness (e.g., estimated probability) in the evaluation process.
 We have clearly stated the platform we used for evaluation in the paper for reference.

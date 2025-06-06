@@ -1,6 +1,6 @@
 # Artifact for PoPETs 2025 Paper: Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes
 
-This artifact includes the source code, evaluation scripts, fine-tuned weights, and raw evaluation results for the paper *Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes* accepted at PoPETs 2025.
+This artifact includes the source code, evaluation scripts, and fine-tuned weights for the paper *Robust and Efficient Watermarking of Large Language Models Using Error Correction Codes* accepted at PoPETs 2025.
 
 We describe the artifact in detail below, including how to install and use the library, how to set up the environment for evaluation, and how to reproduce the evaluation results presented in the paper.
 
@@ -165,6 +165,9 @@ An alternative installation method is to set `BUILD_CUDA_EXT=0` to fall back to 
 PermuMark was evaluated under PyTorch 2.2.1+cu118 version without using the CUDA extension (in which case warnings about CUDA extension are expected).
 
 ### Reproducing Evaluation Results
+
+**Fine-tuned Model Weights**:
+We provide the fine-tuned model weights used in the evaluation on the GitHub release page.
 
 **Usage**:
 The main evaluation entrance is placed at `evaluation/evaluation.py`.
