@@ -61,14 +61,14 @@ We recommend using the provided Docker image to set up the environment for evalu
 The Docker image can be pulled from the GitHub Container Registry with the following command:
 
 ```bash
-docker pull ghcr.io/luan-xiaokun/permumark/permumark-eval:latest
+docker pull ghcr.io/luan-xiaokun/permumark-eval:latest
 ```
 
 To run the Docker container, you can use the following command:
 
 ```bash
 docker run --gpus all -it --rm --gpus all \
-  ghcr.io/luan-xiaokun/permumark/permumark-eval:latest
+  ghcr.io/luan-xiaokun/permumark-eval:latest
   # or just `permumark-eval:latest` if you build it locally
 ```
 
